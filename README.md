@@ -38,21 +38,21 @@ pip install -r vm-migration-tool/requirements.txt
 # Run the application
 python vm-migration-tool/main.py
 ```
+
 ---
 
 ## 📸 Screenshots
 
 1. **Create Project**  
-   ![Create Project](docs/screenshots/projct.PNG)
+   <img src="docs/screenshots/projct.PNG" width="700">
 
 2. **Connection & Scan**  
-   ![Connection & Scan](docs/screenshots/connection_scan.PNG)
+   <img src="docs/screenshots/connection_scan.PNG" width="700">
 
 3. **Options & Migration**  
-   ![Options & Migration](docs/screenshots/options_migration.png)
+   <img src="docs/screenshots/options_migration.png" width="700">
 
 ---
-
 
 ## 🖥️ In the UI
 
@@ -85,6 +85,25 @@ python vm-migration-tool/main.py
 ## 🗺️ Roadmap
 
 See [`ROADMAP.en.md`](ROADMAP.en.md)
+
+---
+
+---
+
+## 🤝 Contributing
+
+Contributions, issues, and feature requests are welcome!  
+Feel free to open a [GitHub issue](https://github.com/DatacorpCloud/ProxMox-VM-Migration-Tool/issues)  
+or submit a [pull request](https://github.com/DatacorpCloud/ProxMox-VM-Migration-Tool/pulls).
+
+If you find this project useful, please consider giving it a **⭐ star** —  
+it helps others discover the tool and motivates further development.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 
