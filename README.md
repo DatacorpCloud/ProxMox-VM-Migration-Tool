@@ -60,6 +60,9 @@ Operational Instructions (Options & Migration)
 
 Screenshot (example)
 
-![Options & Migration](docs/screenshots/projct.png)
-![Options & Migration](docs/screenshots/connection_scan.png)
-![Options & Migration](docs/screenshots/options_migration.png)
+1. Create Project
+   ![Create Project](docs/screenshots/projct.PNG)
+2. Connection & Scan
+   ![Connection & Scan](docs/screenshots/connection_scan.PNG)
+3. Options & Migration
+   ![Options & Migration](docs/screenshots/options_migration.png)
