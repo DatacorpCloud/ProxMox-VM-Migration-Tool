@@ -60,4 +60,6 @@ Operational Instructions (Options & Migration)
 
 Screenshot (example)
 
+![Options & Migration](docs/screenshots/projct.png)
+![Options & Migration](docs/screenshots/connection_scan.png)
 ![Options & Migration](docs/screenshots/options_migration.png)
