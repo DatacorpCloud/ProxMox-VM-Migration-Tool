@@ -12,11 +12,12 @@ from core.migration_flow import compose_plan, execute_plan, execute_full_migrati
 from core.proxmox import list_storages, list_bridges, get_next_vmid
 from core.transfer import compute_dest_dir
 from core.projects import save_project, load_project, list_projects, project_exists
+from core.locale import set_language, get_string, _
 
 
 def run_app():
     root = tk.Tk()
-    root.title("Migrazione VM: ESXi → Proxmox")
+    root.title(_("app_title"))
     root.geometry("1000x700")
 
     style = ttk.Style()
@@ -24,6 +25,23 @@ def run_app():
         style.theme_use("clam")
     except:
         pass
+        
+    # Selettore lingua
+    lang_frame = ttk.Frame(root)
+    lang_frame.pack(fill="x", padx=10, pady=(10,0))
+    ttk.Label(lang_frame, text="Language/Lingua:").pack(side="left", padx=(0,5))
+    
+    def change_language():
+        lang = lang_var.get()
+        set_language(lang)
+        messagebox.showinfo("Info", "Riavvia l'applicazione per applicare la nuova lingua / Restart the application to apply the new language")
+    
+    # Imposta il valore iniziale del selettore di lingua in base alla lingua corrente
+    from core.locale import current_language
+    lang_var = tk.StringVar(value=current_language)
+    lang_combo = ttk.Combobox(lang_frame, values=["it", "en"], textvariable=lang_var, state="readonly", width=5)
+    lang_combo.pack(side="left")
+    lang_combo.bind("<<ComboboxSelected>>", lambda e: change_language())
 
     # Tabs a step (Progetto, Scansione, Migrazione)
     notebook = ttk.Notebook(root)
@@ -32,43 +50,43 @@ def run_app():
     step1 = ttk.Frame(notebook)
     step2 = ttk.Frame(notebook)
     step3 = ttk.Frame(notebook)
-    notebook.add(step1, text="Progetto")
-    notebook.add(step2, text="Connessione e Scansione")
-    notebook.add(step3, text="Opzioni & Migrazione")
+    notebook.add(step1, text=_("tab_project"))
+    notebook.add(step2, text=_("tab_connection"))
+    notebook.add(step3, text=_("tab_migration"))
 
     # Frame credenziali (Step 1)
-    creds = ttk.LabelFrame(step1, text="Credenziali")
+    creds = ttk.LabelFrame(step1, text=_("credentials"))
     creds.pack(fill="x", padx=10, pady=10)
 
     # Proxmox
-    ttk.Label(creds, text="Proxmox host/IP").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(creds, text="Proxmox " + _("host_ip")).grid(row=0, column=0, sticky="w", padx=5, pady=5)
     pmx_host = ttk.Entry(creds, width=25)
     pmx_host.grid(row=0, column=1, padx=5, pady=5)
-    ttk.Label(creds, text="User").grid(row=0, column=2, sticky="w", padx=5, pady=5)
+    ttk.Label(creds, text=_("user")).grid(row=0, column=2, sticky="w", padx=5, pady=5)
     pmx_user = ttk.Entry(creds, width=15)
     pmx_user.grid(row=0, column=3, padx=5, pady=5)
-    ttk.Label(creds, text="Password").grid(row=0, column=4, sticky="w", padx=5, pady=5)
+    ttk.Label(creds, text=_("password")).grid(row=0, column=4, sticky="w", padx=5, pady=5)
     pmx_pass = ttk.Entry(creds, show="*", width=20)
     pmx_pass.grid(row=0, column=5, padx=5, pady=5)
 
     # ESXi
-    ttk.Label(creds, text="ESXi host/IP").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(creds, text="ESXi " + _("host_ip")).grid(row=1, column=0, sticky="w", padx=5, pady=5)
     esxi_host = ttk.Entry(creds, width=25)
     esxi_host.grid(row=1, column=1, padx=5, pady=5)
-    ttk.Label(creds, text="User").grid(row=1, column=2, sticky="w", padx=5, pady=5)
+    ttk.Label(creds, text=_("user")).grid(row=1, column=2, sticky="w", padx=5, pady=5)
     esxi_user = ttk.Entry(creds, width=15)
     esxi_user.grid(row=1, column=3, padx=5, pady=5)
-    ttk.Label(creds, text="Password").grid(row=1, column=4, sticky="w", padx=5, pady=5)
+    ttk.Label(creds, text=_("password")).grid(row=1, column=4, sticky="w", padx=5, pady=5)
     esxi_pass = ttk.Entry(creds, show="*", width=20)
     esxi_pass.grid(row=1, column=5, padx=5, pady=5)
 
     # Frame gestione progetto (Step 1)
-    proj = ttk.LabelFrame(step1, text="Progetto")
+    proj = ttk.LabelFrame(step1, text=_("project"))
     proj.pack(fill="x", padx=10, pady=(0,10))
-    ttk.Label(proj, text="Nome progetto").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(proj, text=_("project_name")).grid(row=0, column=0, sticky="w", padx=5, pady=5)
     proj_name = ttk.Entry(proj, width=30)
     proj_name.grid(row=0, column=1, padx=5, pady=5)
-    ttk.Label(proj, text="Esistenti").grid(row=0, column=2, sticky="w", padx=5, pady=5)
+    ttk.Label(proj, text=_("existing_projects")).grid(row=0, column=2, sticky="w", padx=5, pady=5)
     proj_list = ttk.Combobox(proj, values=list_projects(), state="readonly", width=20)
     proj_list.grid(row=0, column=3, padx=5, pady=5)
     def refresh_projects():
@@ -170,86 +188,86 @@ def run_app():
         clear_project_fields()
         log("Nuovo progetto: campi resettati")
 
-    ttk.Button(proj, text="Nuovo", command=on_new_project).grid(row=0, column=4, padx=5, pady=5)
-    ttk.Button(proj, text="Salva", command=on_save_project).grid(row=0, column=5, padx=5, pady=5)
-    ttk.Button(proj, text="Carica", command=on_load_project).grid(row=0, column=6, padx=5, pady=5)
-    ttk.Button(proj, text="Aggiorna elenco", command=refresh_projects).grid(row=0, column=7, padx=5, pady=5)
+    ttk.Button(proj, text=_("new"), command=on_new_project).grid(row=0, column=4, padx=5, pady=5)
+    ttk.Button(proj, text=_("save"), command=on_save_project).grid(row=0, column=5, padx=5, pady=5)
+    ttk.Button(proj, text=_("load"), command=on_load_project).grid(row=0, column=6, padx=5, pady=5)
+    ttk.Button(proj, text=_("refresh_list"), command=refresh_projects).grid(row=0, column=7, padx=5, pady=5)
 
     # Opzioni Proxmox (Step 3)
-    opts = ttk.LabelFrame(step3, text="Opzioni Proxmox")
+    opts = ttk.LabelFrame(step3, text=_("proxmox_options"))
     opts.pack(fill="x", padx=10, pady=10)
-    ttk.Label(opts, text="Storage (nome)").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(opts, text=_("storage")).grid(row=0, column=0, sticky="w", padx=5, pady=5)
     storage_name = ttk.Combobox(opts, values=[], state="readonly", width=20)
     storage_name.grid(row=0, column=1, padx=5, pady=5)
-    ttk.Label(opts, text="Bridge rete").grid(row=0, column=2, sticky="w", padx=5, pady=5)
+    ttk.Label(opts, text=_("network")).grid(row=0, column=2, sticky="w", padx=5, pady=5)
     bridge_name = ttk.Combobox(opts, values=[], state="readonly", width=20)
     bridge_name.grid(row=0, column=3, padx=5, pady=5)
 
-    ttk.Label(opts, text="VM ID nuova").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(opts, text=_("new_vmid")).grid(row=1, column=0, sticky="w", padx=5, pady=5)
     new_vmid = ttk.Entry(opts, width=10)
     new_vmid.insert(0, "120")
     new_vmid.grid(row=1, column=1, padx=5, pady=5)
-    ttk.Label(opts, text="VM name nuova").grid(row=1, column=2, sticky="w", padx=5, pady=5)
+    ttk.Label(opts, text=_("new_name")).grid(row=1, column=2, sticky="w", padx=5, pady=5)
     new_vmname = ttk.Entry(opts, width=20)
     new_vmname.insert(0, "easydeploy-web")
     new_vmname.grid(row=1, column=3, padx=5, pady=5)
 
-    ttk.Label(opts, text="RAM (MB)").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(opts, text=_("ram_mb")).grid(row=2, column=0, sticky="w", padx=5, pady=5)
     new_mem = ttk.Entry(opts, width=10)
     new_mem.insert(0, "4096")
     new_mem.grid(row=2, column=1, padx=5, pady=5)
-    ttk.Label(opts, text="vCPU").grid(row=2, column=2, sticky="w", padx=5, pady=5)
+    ttk.Label(opts, text=_("vcpu")).grid(row=2, column=2, sticky="w", padx=5, pady=5)
     new_cores = ttk.Entry(opts, width=10)
     new_cores.insert(0, "2")
     new_cores.grid(row=2, column=3, padx=5, pady=5)
 
-    ttk.Label(opts, text="Destinazione file (su Proxmox)").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(opts, text=_("destination")).grid(row=3, column=0, sticky="w", padx=5, pady=5)
     dest_dir_entry = ttk.Entry(opts, width=40)
     dest_dir_entry.grid(row=3, column=1, columnspan=2, padx=5, pady=5, sticky="we")
-    dest_browse = ttk.Button(opts, text="Sfoglia…")
+    dest_browse = ttk.Button(opts, text=_("browse"))
     dest_browse.grid(row=3, column=3, padx=5, pady=5, sticky="w")
 
     dry_run_var = tk.BooleanVar(value=True)
-    dry_run = ttk.Checkbutton(opts, text="Dry-run (mostra piano, non esegue)", variable=dry_run_var)
+    dry_run = ttk.Checkbutton(opts, text=_("dry_run"), variable=dry_run_var)
     dry_run.grid(row=4, column=0, columnspan=4, sticky="w", padx=5, pady=5)
 
     uefi_var = tk.BooleanVar(value=False)
-    uefi_chk = ttk.Checkbutton(opts, text="UEFI/OVMF", variable=uefi_var)
+    uefi_chk = ttk.Checkbutton(opts, text=_("uefi_ovmf"), variable=uefi_var)
     uefi_chk.grid(row=5, column=0, sticky="w", padx=5, pady=5)
 
     vlan_var = tk.BooleanVar(value=False)
-    vlan_chk = ttk.Checkbutton(opts, text="VLAN-aware (mostra comando)", variable=vlan_var)
+    vlan_chk = ttk.Checkbutton(opts, text=_("vlan_aware"), variable=vlan_var)
     vlan_chk.grid(row=5, column=1, sticky="w", padx=5, pady=5)
 
     # Opzioni conversione qemu-img
     convert_var = tk.BooleanVar(value=False)
-    convert_chk = ttk.Checkbutton(opts, text="Converti con qemu-img", variable=convert_var)
+    convert_chk = ttk.Checkbutton(opts, text=_("convert_qemu"), variable=convert_var)
     convert_chk.grid(row=6, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(opts, text="Formato destino").grid(row=6, column=2, sticky="w", padx=5, pady=5)
-    fmt_combo = ttk.Combobox(opts, values=["qcow2", "raw"], state="readonly", width=10)
+    ttk.Label(opts, text=_("format")).grid(row=6, column=2, sticky="w", padx=5, pady=5)
+    fmt_combo = ttk.Combobox(opts, values=["qcow2", "raw", "vmdk"], state="readonly", width=10)
     fmt_combo.set("qcow2")
     fmt_combo.grid(row=6, column=3, padx=5, pady=5)
 
     # Azioni di scansione (Step 2)
     actions_scan = ttk.Frame(step2)
     actions_scan.pack(fill="x", padx=10, pady=5)
-    scan_btn = ttk.Button(actions_scan, text="Connetti Proxmox e Scansiona ESXi")
+    scan_btn = ttk.Button(actions_scan, text=_("connect_and_scan"))
     scan_btn.pack(side="left", padx=5)
 
     # Azioni di migrazione (Step 3)
     actions_mig = ttk.Frame(step3)
     actions_mig.pack(fill="x", padx=10, pady=5)
-    migrate_btn = ttk.Button(actions_mig, text="Prepara/Esegui Migrazione")
+    migrate_btn = ttk.Button(actions_mig, text=_("prepare_execute_migration"))
     migrate_btn.pack(side="left", padx=5)
-    cleanup_btn = ttk.Button(actions_mig, text="Cleanup credenziali ESXi")
+    cleanup_btn = ttk.Button(actions_mig, text=_("cleanup_esxi_credentials"))
     cleanup_btn.pack(side="left", padx=5)
 
     # Risultati scansione (Step 2)
-    res_frame = ttk.LabelFrame(step2, text="VM trovate su ESXi")
+    res_frame = ttk.LabelFrame(step2, text=_("vms_found_on_esxi"))
     res_frame.pack(fill="both", expand=True, padx=10, pady=10)
     cols = ("name", "datastore", "path", "capacity", "power")
     tree = ttk.Treeview(res_frame, columns=cols, show="headings", height=12)
-    for c, label in zip(cols, ["VM", "Datastore", "Path", "Capacity (GB)", "Power"]):
+    for c, label in zip(cols, [_("vm_name"), _("datastore"), _("disk_path"), _("capacity"), _("power_state")]):
         tree.heading(c, text=label)
         if c == "path":
             tree.column(c, width=360)
@@ -260,17 +278,17 @@ def run_app():
     tree.pack(fill="both", expand=True)
 
     # Dischi della VM selezionata (Step 3)
-    disk_frame = ttk.LabelFrame(step3, text="Dischi della VM selezionata (selezione multipla)")
+    disk_frame = ttk.LabelFrame(step3, text=_("selected_vm_disks"))
     disk_frame.pack(fill="x", padx=10, pady=(0,10))
     dcols = ("datastore", "path", "capacity")
     tree_disks = ttk.Treeview(disk_frame, columns=dcols, show="headings", height=6, selectmode="extended")
-    for c, label in zip(dcols, ["Datastore", "Path", "Capacity (GB)"]):
+    for c, label in zip(dcols, [_("datastore"), _("disk_path"), _("capacity")]):
         tree_disks.heading(c, text=label)
         tree_disks.column(c, width=260 if c == "path" else 180)
     tree_disks.pack(fill="x", expand=False)
 
     # Log (sempre visibile sotto ai tabs)
-    log_frame = ttk.LabelFrame(root, text="Log")
+    log_frame = ttk.LabelFrame(root, text=_("log"))
     log_frame.pack(fill="both", expand=True, padx=10, pady=10)
     log_txt = tk.Text(log_frame, height=10)
     log_txt.pack(fill="both", expand=True)
