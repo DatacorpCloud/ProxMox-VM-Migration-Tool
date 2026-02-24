@@ -1,109 +1,117 @@
-# 🧩 ProxMox VM Migration Tool  
-_Migrate your virtual machines seamlessly from VMware ESXi to Proxmox VE_
+VM Migration: ESXi → Proxmox
 
-[![View on GitHub](https://img.shields.io/badge/View%20on-GitHub-black?logo=github)](https://github.com/DatacorpCloud/ProxMox-VM-Migration-Tool)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-green.svg)]()
-[![Platform](https://img.shields.io/badge/Platform-Proxmox%20%7C%20ESXi-orange.svg)]()
+Overview
 
----
+- Desktop tool to migrate VMs from VMware ESXi to Proxmox VE.
+- Copies VMDK from ESXi, converts with `qemu-img`, imports to target storage, and configures VM (including optional UEFI/OVMF).
+- Progress bars and a dedicated progress log file for visibility.
 
-## 🚀 Overview
+Key Features
 
-**ProxMox VM Migration Tool** is a desktop utility to migrate virtual machines from **VMware ESXi** to **Proxmox VE**.  
-It copies VMDK disks from ESXi, converts them using `qemu-img`, and imports them to target storage with automatic VM configuration — including optional UEFI/OVMF setup.
+- ESXi copy via SCP with `sshpass` using a password file on Proxmox (no plaintext in commands).
+- Conversion and import to Proxmox storage (`images`, `dir`, etc.).
+- Optional UEFI/OVMF config (`q35`, `ovmf`, `efidisk0` with pre-enrolled keys).
+- UI flow: Connect & Scan → Options & Migration.
 
-### ✨ Key Features
-- Secure SCP transfer from ESXi via `sshpass` (password file, no plaintext).
-- Conversion and import into any Proxmox storage (`images`, `dir`, etc.).
-- Optional **UEFI/OVMF** configuration (`q35`, `efidisk0` with pre-enrolled keys).
-- UI workflow: **Connect & Scan → Options → Migration**.
-- Progress bars + detailed log file for transparency.
+Requirements
 
----
+- Python 3.9+
+- Proxmox VE reachable via SSH.
+- ESXi host reachable via SSH (user with read access to datastore).
 
-## ⚙️ Requirements
-- Python **3.9+**
-- Proxmox VE reachable via SSH
-- ESXi host reachable via SSH (user with read access to datastore)
+Quick Start
 
----
+- Install deps: `pip install -r vm-migration-tool/requirements.txt`
+- Run app: `python vm-migration-tool/main.py`
+- In the UI:
+  - Enter Proxmox and ESXi credentials.
+  - Scan ESXi and choose a VM.
+  - Pick Proxmox storage and options (UEFI/OVMF if original VM uses UEFI).
+  - Start migration and monitor progress.
 
-## 🧭 Quick Start
+Web UI (Backup & Restore)
 
-```bash
-# Install dependencies
-pip install -r vm-migration-tool/requirements.txt
+This project also includes a lightweight web interface (Flask) that exposes:
 
-# Run the application
-python vm-migration-tool/main.py
-```
+- Resource management (Proxmox / ESXi credentials stored locally in SQLite)
+- Repository storage management (NFS / iSCSI / Windows mounted paths)
+- Backup workflows (ESXi and Proxmox)
+- Restore workflows:
+  - Simple restore (auto-detect backup platform, optional VM name, start on/off)
+  - Cross-platform restore (Proxmox ⇄ VMware) using a Proxmox worker when needed
+- Jobs view and real-time job events (progress and logs)
+- Home dashboard metrics (backups count, total GB, VMs in backup, migrated VMs)
 
----
+Run the Web UI
 
-## 📸 Screenshots
+- Install deps: `pip install -r vm-migration-tool/requirements.txt`
+- Start server: `python vm-migration-tool/main.py --web --host localhost --port 8080`
+- Open: http://localhost:8080
 
-1. **Create Project**  
-   <img src="docs/screenshots/projct.PNG" width="700">
+Notes
 
-2. **Connection & Scan**  
-   <img src="docs/screenshots/connection_scan.PNG" width="700">
+- MVP limitation: one job at a time (backup/restore/migration) to keep runs deterministic.
+- Repo storages can be tested from the UI ("Test" button) to validate access before using them.
+- Minimal runtime set for web-only deployments:
+  - `vm-migration-tool/main.py`
+  - `vm-migration-tool/ui/web_app.py`
+  - `vm-migration-tool/core/*`
+  - `vm-migration-tool/requirements.txt`
+  - Optional for persistence: `vm-migration-tool/app.sqlite3`, `vm-migration-tool/repository/`
 
-3. **Options & Migration**  
-   <img src="docs/screenshots/options_migration.png" width="700">
+Security & Logging
 
----
+- Password sanitization in application logs; sensitive values are redacted.
+- ESXi password is written to `/root/esxi_pass.txt` on Proxmox (restricted permissions) and used via `sshpass -f`.
+- Progress entries are also written to `vm-migration-tool/logs/progress-*.log`.
+- Project files exclude secrets by design.
 
-## 🖥️ In the UI
+Usage Notes
 
-1. **Enter** Proxmox and ESXi credentials.  
-2. **Scan** ESXi and select a VM.  
-3. **Pick** Proxmox storage and options (UEFI/OVMF if applicable).  
-4. **Start migration** and monitor progress.
+- Enable UEFI/OVMF only if the original VM uses UEFI/EFI firmware; keep BIOS legacy otherwise.
+- After a migration completes, you can select another VM and repeat without restarting the app.
 
----
+Roadmap
 
-## 🔐 Security & Logging
+- See [ROADMAP.en.md](ROADMAP.en.md) for planned features (multi-VM concurrent migration, improved transfer resilience, CI, and more).
 
-- Sensitive credentials are **redacted** from logs.  
-- The ESXi password is stored at `/root/esxi_pass.txt` on Proxmox (with secure permissions).  
-- Migration progress logs are written under  
-  `vm-migration-tool/logs/progress-*.log`.  
-- Project files are designed to **exclude secrets by default**.
+Operational Instructions (Options & Migration)
 
----
+- Uncheck `Dry-run (show plan, do not execute)` to actually run the migration.
+- Check `Convert with qemu-img` to convert VMDK to the target format (default: `qcow2`).
+- Select a Proxmox storage that supports `images` content (in Proxmox: Datacenter → Storage → your storage should include "Disk image").
+  - If the storage does NOT support `images`, the app will warn and block the import.
+- Field `Destination file (on Proxmox)`:
+  - If the storage is mounted under `/mnt/pve/<storage>`, the suggested path is `/mnt/pve/<storage>/tmp/<vmName>`.
+  - For non-mounted storages (e.g., `local-lvm`), the fallback is `/root/tmp/<vmName>`.
+  - Use `Browse…` to set a custom path if needed.
+- UEFI/OVMF: enable only if the original VM uses UEFI/EFI firmware; keep disabled for legacy BIOS.
+- Press `Prepare/Run Migration` and follow the progress bars (copy and import/conversion).
 
-## 🧩 Usage Notes
+Screenshots
 
-- Enable **UEFI/OVMF** only if the source VM uses UEFI firmware; keep **legacy BIOS** otherwise.  
-- After a migration completes, you can start another one **without restarting the app**.  
-- Ensure the selected Proxmox storage supports **Disk image** content type  
-  (`Datacenter → Storage → check “Content: Disk image”`).
+1. Project Creation
+   ![Project Creation](docs/screenshots/projct.PNG)
+2. Connection and Scan
+   ![Connection and Scan](docs/screenshots/connection_scan.PNG)
+3. Options and Migration
+   ![Options and Migration](docs/screenshots/options_migration.png)
 
----
+Web UI Screenshots
 
-## 🗺️ Roadmap
-
-See [`ROADMAP.en.md`](ROADMAP.en.md)
-
----
-
----
-
-## 🤝 Contributing
-
-Contributions, issues, and feature requests are welcome!  
-Feel free to open a [GitHub issue](https://github.com/DatacorpCloud/ProxMox-VM-Migration-Tool/issues)  
-or submit a [pull request](https://github.com/DatacorpCloud/ProxMox-VM-Migration-Tool/pulls).
-
-If you find this project useful, please consider giving it a **⭐ star** —  
-it helps others discover the tool and motivates further development.
-
----
-
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE).
-
----
-
+1. Home
+   ![Home](docs/screenshots/home.png)
+2. Resources • Storage
+   ![Storage](docs/screenshots/storage.png)
+3. Jobs
+   ![Job](docs/screenshots/job.png)
+4. Resources • Virtualizers (list)
+   ![Virtualizers List](docs/screenshots/elen-virtualizzatori.png)
+5. Resources • Virtualizers (add)
+   ![Add Virtualizer](docs/screenshots/virtualizzatore.png)
+6. Backup
+   ![Backup](docs/screenshots/backup.png)
+7. Cross-platform restore
+   ![Restore Cross-platform](docs/screenshots/restorecrossplat.png)
+8. Live cross migration
+   ![Live Cross Migration](docs/screenshots/livecrossmigration.png)

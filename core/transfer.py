@@ -82,6 +82,25 @@ def copy_vmdk_from_esxi(
     return f"{dest_dir}/" + vmdk_relpath.split("/")[-1], f"{dest_dir}/" + data_rel.split("/")[-1]
 
 
+def copy_file_from_esxi(
+    ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    datastore: str,
+    relpath: str,
+    dest_dir: str,
+) -> str:
+    ensure_sshpass(ssh)
+    ensure_dir(ssh, dest_dir)
+    src = f"/vmfs/volumes/{datastore}/{relpath}"
+    base_scp = (
+        f"sshpass -f /root/esxi_pass.txt scp -o StrictHostKeyChecking=no "
+        f"{esxi_user}@{esxi_host}:'{{src}}' '{dest_dir}/'"
+    )
+    ssh.run(base_scp.format(src=src))
+    return f"{dest_dir}/" + relpath.split("/")[-1]
+
+
 def start_scp_background(ssh: SSHClient, esxi_host: str, esxi_user: str, esxi_pass: str, src: str, dest_dir: str) -> int:
     ensure_sshpass(ssh)
     ensure_dir(ssh, dest_dir)

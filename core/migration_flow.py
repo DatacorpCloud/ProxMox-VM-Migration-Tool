@@ -20,7 +20,13 @@ from .transfer import (
     guess_vmdk_data_rel,
     qemu_img_convert,
 )
-from .esxi_import import write_esxi_password_file
+from .esxi_import import (
+    write_esxi_password_file,
+    esxi_find_vmid_by_vmx,
+    esxi_create_snapshot,
+    esxi_find_snapshot_id_by_name,
+    esxi_remove_snapshot,
+)
 
 
 def compose_plan(vmid: int, name: str, memory: int, cores: int, net0: str, vmdk_path: str, storage: str) -> List[str]:
@@ -70,6 +76,7 @@ def execute_full_migration(
     selected_disk_indexes: Optional[List[int]] = None,
     use_convert: bool = False,
     convert_fmt: str = "qcow2",
+    use_esxi_snapshot: bool = False,
     progress_cb: Optional[Callable[[float, str], None]] = None,
 ) -> List[str]:
     logs: List[str] = []
@@ -92,7 +99,62 @@ def execute_full_migration(
     except Exception as e:
         logs.append(f"Errore scrittura password ESXi: {e}")
 
-    # 2) Creazione VM e import disco
+    power = str(selected_vm_info.get("power", "") or "")
+    if power == "poweredOn" and not use_esxi_snapshot:
+        raise RuntimeError("VM accesa su ESXi: abilita Snapshot oppure spegni la VM prima di migrare")
+
+    snapshot_vmid: Optional[int] = None
+    snapshot_id: Optional[int] = None
+    snapshot_name: Optional[str] = None
+
+    if use_esxi_snapshot:
+        cfg = selected_vm_info.get("config", {}) if isinstance(selected_vm_info, dict) else {}
+        cfg_ds = (cfg.get("datastore") or "").strip()
+        cfg_vmx = (cfg.get("path") or "").strip()
+        if not cfg_ds or not cfg_vmx:
+            raise RuntimeError("Dati VMX non disponibili: impossibile creare snapshot ESXi")
+        snapshot_vmid = esxi_find_vmid_by_vmx(ssh, esxi_host, esxi_user, "/root/esxi_pass.txt", cfg_ds, cfg_vmx)
+        if snapshot_vmid is None:
+            raise RuntimeError(f"Impossibile trovare VMID ESXi per VMX {cfg_ds}/{cfg_vmx}")
+        snapshot_name = f"vm-migration-tool-{snapshot_vmid}-{int(time.time())}"
+        if progress_cb:
+            try:
+                progress_cb(0.0, "Snapshot: creazione snapshot ESXi…")
+            except Exception:
+                pass
+        try:
+            esxi_create_snapshot(
+                ssh,
+                esxi_host,
+                esxi_user,
+                "/root/esxi_pass.txt",
+                snapshot_vmid,
+                snapshot_name,
+                "Snapshot temporanea per migrazione",
+                quiesce=True,
+                memory=False,
+            )
+        except Exception as e:
+            logs.append(f"Snapshot ESXi con quiesce fallita, retry senza quiesce: {e}")
+            esxi_create_snapshot(
+                ssh,
+                esxi_host,
+                esxi_user,
+                "/root/esxi_pass.txt",
+                snapshot_vmid,
+                snapshot_name,
+                "Snapshot temporanea per migrazione",
+                quiesce=False,
+                memory=False,
+            )
+        snapshot_id = esxi_find_snapshot_id_by_name(
+            ssh, esxi_host, esxi_user, "/root/esxi_pass.txt", snapshot_vmid, snapshot_name
+        )
+        if snapshot_id is None:
+            raise RuntimeError("Snapshot creata ma Snapshot Id non trovato (non posso fare cleanup in sicurezza)")
+        logs.append(f"Snapshot ESXi creata: vmid={snapshot_vmid} snapshot_id={snapshot_id} name={snapshot_name}")
+
+    # 2) Creazione VM su Proxmox
     code, out, err = qm_create(ssh, vmid, name, memory, cores, net0)
     logs.append(f"qm create -> code={code}\n{out}\n{err}")
     if code != 0:
@@ -106,7 +168,9 @@ def execute_full_migration(
             except Exception:
                 pass
 
-    # 3) Per ogni disco selezionato: copia con progress (flat), import e attach su slot scsiN
+    copied_disks: List[dict] = []
+
+    # 3) Copia dischi su Proxmox (con snapshot ESXi attiva, se abilitata)
     for idx, d in enumerate(disk_list):
         vmdk_relpath = d.get("path", "")
         datastore = d.get("datastore", "")
@@ -129,49 +193,58 @@ def execute_full_migration(
         # copia descriptor (piccolo)
         copy_vmdk_from_esxi(ssh, esxi_host, esxi_user, esxi_pass, datastore, vmdk_relpath, dest_dir)
         vmdk_local = f"{dest_dir}/" + vmdk_relpath.split("/")[-1]
+        copied_disks.append({"idx": idx, "vmdk_local": vmdk_local})
 
-        # conversione opzionale
+    if snapshot_vmid is not None and snapshot_id is not None:
+        if progress_cb:
+            try:
+                progress_cb(0.0, "Snapshot: rimozione snapshot ESXi…")
+            except Exception:
+                pass
+        esxi_remove_snapshot(ssh, esxi_host, esxi_user, "/root/esxi_pass.txt", snapshot_vmid, snapshot_id)
+        logs.append("Snapshot ESXi rimossa")
+
+    from .proxmox import storage_supports_images
+    if not storage_supports_images(ssh, storage):
+        raise RuntimeError(
+            f"Lo storage '{storage}' non supporta il contenuto 'images'. Seleziona uno storage idoneo (es. 'local-lvm') o abilita 'images' nelle impostazioni dello storage."
+        )
+
+    # 4) Conversione/import/attach
+    for item in copied_disks:
+        idx = int(item["idx"])
+        vmdk_local = str(item["vmdk_local"])
         import_source = vmdk_local
         if use_convert:
-            # Mostra avvio conversione prima che compaiano percentuali
             if progress_cb:
                 try:
                     progress_cb(0.0, f"Convert: avvio conversione {vmdk_local} → {convert_fmt}")
                 except Exception:
                     pass
             out_img = f"{dest_dir}/{name}-disk{idx}.{convert_fmt}"
-            code_c, out_c, err_c = qemu_img_convert(
-                ssh, vmdk_local, out_img, fmt=convert_fmt, compress=True, progress_cb=progress_cb
-            )
+            code_c, out_c, err_c = qemu_img_convert(ssh, vmdk_local, out_img, fmt=convert_fmt, compress=True, progress_cb=progress_cb)
             logs.append(f"qemu-img convert -> code={code_c}\n{out_c}\n{err_c}")
             if code_c == 0:
                 import_source = out_img
 
-        # import e attach (prima verifica che lo storage supporti 'images')
-        from .proxmox import storage_supports_images
-        if not storage_supports_images(ssh, storage):
-            raise RuntimeError(
-                f"Lo storage '{storage}' non supporta il contenuto 'images'. Seleziona uno storage idoneo (es. 'local-lvm') o abilita 'images' nelle impostazioni dello storage."
-            )
-        # import e attach
-        # Se disponibile, traccia anche l'import (qm importdisk) con progress
         if progress_cb:
-            # Avvisa immediatamente l'avvio dell'import prima delle percentuali
             try:
                 progress_cb(0.0, f"Import: avvio importdisk su storage '{storage}'")
             except Exception:
                 pass
-            # Avvolge progress_cb per aggiungere elapsed ed ETA alla fase d'import
             start_ts = time.time()
+
             def _fmt_t(sec: float) -> str:
                 s = int(sec)
                 return f"{s//60:02d}:{s%60:02d}"
+
             def _relay(pct: float, msg: str):
                 elapsed = max(0.001, time.time() - start_ts)
                 eta = 0.0
                 if pct > 0.0 and pct < 100.0:
                     eta = elapsed * (100.0 - pct) / pct
                 progress_cb(pct, f"{msg} — elapsed {_fmt_t(elapsed)} — ETA {_fmt_t(eta)}")
+
             code, out, err = qm_importdisk_with_progress(ssh, vmid, import_source, storage, _relay)
         else:
             code, out, err = qm_importdisk(ssh, vmid, import_source, storage)

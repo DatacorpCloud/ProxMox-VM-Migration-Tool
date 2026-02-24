@@ -1,7 +1,10 @@
 import json
-from typing import Dict, Any
+import re
+import shlex
+from typing import Dict, Any, Optional, Tuple
 
 from .ssh_client import SSHClient
+from .transfer import ensure_sshpass
 
 
 def write_esxi_password_file(proxmox_ssh: SSHClient, password: str, path: str = "/root/esxi_pass.txt"):
@@ -45,3 +48,213 @@ def list_vms(proxmox_ssh: SSHClient, esxi_host: str, esxi_user: str, pass_file: 
             return data
     # Fallback: restituisci ciò che è stato parsato
     return data
+
+
+def esxi_run_cmd(
+    proxmox_ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    pass_file: str,
+    remote_cmd: str,
+    timeout: Optional[int] = None,
+) -> Tuple[int, str, str]:
+    ensure_sshpass(proxmox_ssh)
+    cmd = (
+        f"sshpass -f {shlex.quote(pass_file)} ssh "
+        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"{shlex.quote(esxi_user)}@{shlex.quote(esxi_host)} {shlex.quote(remote_cmd)}"
+    )
+    return proxmox_ssh.run(cmd, timeout=timeout)
+
+
+def esxi_find_vmid_by_vmx(
+    proxmox_ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    pass_file: str,
+    vmx_datastore: str,
+    vmx_relpath: str,
+) -> Optional[int]:
+    expected = f"[{vmx_datastore}] {vmx_relpath}"
+    code, out, err = esxi_run_cmd(proxmox_ssh, esxi_host, esxi_user, pass_file, "vim-cmd vmsvc/getallvms", timeout=60)
+    if code != 0:
+        raise RuntimeError(f"Errore getallvms (code={code}): {err or out}")
+    for line in out.splitlines():
+        if expected in line:
+            m = re.match(r"\s*(\d+)\s+", line)
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    return None
+    return None
+
+
+def esxi_create_snapshot(
+    proxmox_ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    pass_file: str,
+    vmid: int,
+    name: str,
+    description: str,
+    quiesce: bool = True,
+    memory: bool = False,
+) -> None:
+    mem_flag = "1" if memory else "0"
+    quiesce_flag = "1" if quiesce else "0"
+    remote = f"vim-cmd vmsvc/snapshot.create {vmid} {shlex.quote(name)} {shlex.quote(description)} {mem_flag} {quiesce_flag}"
+    code, out, err = esxi_run_cmd(proxmox_ssh, esxi_host, esxi_user, pass_file, remote, timeout=120)
+    if code != 0:
+        raise RuntimeError(f"Creazione snapshot fallita (code={code}): {err or out}")
+
+
+def esxi_find_snapshot_id_by_name(
+    proxmox_ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    pass_file: str,
+    vmid: int,
+    snapshot_name: str,
+) -> Optional[int]:
+    code, out, err = esxi_run_cmd(
+        proxmox_ssh, esxi_host, esxi_user, pass_file, f"vim-cmd vmsvc/snapshot.get {vmid}", timeout=60
+    )
+    if code != 0:
+        return None
+    last_name: Optional[str] = None
+    for line in out.splitlines():
+        m_name = re.search(r"Snapshot\s+Name\s*:\s*(.+)\s*$", line)
+        if m_name:
+            last_name = m_name.group(1).strip()
+            continue
+        m_id = re.search(r"Snapshot\s+Id\s*:\s*(\d+)\s*$", line)
+        if m_id and last_name == snapshot_name:
+            try:
+                return int(m_id.group(1))
+            except Exception:
+                return None
+    return None
+
+
+def esxi_create_snapshot_direct(
+    esxi_ssh: SSHClient,
+    vmid: int,
+    name: str,
+    description: str,
+    quiesce: bool = True,
+    memory: bool = False,
+) -> None:
+    mem_flag = "1" if memory else "0"
+    quiesce_flag = "1" if quiesce else "0"
+    remote = f"vim-cmd vmsvc/snapshot.create {vmid} {shlex.quote(name)} {shlex.quote(description)} {mem_flag} {quiesce_flag}"
+    code, out, err = esxi_run_cmd_direct(esxi_ssh, remote, timeout=120)
+    if code != 0:
+        raise RuntimeError(f"Creazione snapshot fallita (code={code}): {err or out}")
+
+
+def esxi_find_snapshot_id_by_name_direct(esxi_ssh: SSHClient, vmid: int, snapshot_name: str) -> Optional[int]:
+    code, out, err = esxi_run_cmd_direct(esxi_ssh, f"vim-cmd vmsvc/snapshot.get {vmid}", timeout=60)
+    if code != 0:
+        return None
+    last_name: Optional[str] = None
+    for line in out.splitlines():
+        m_name = re.search(r"Snapshot\s+Name\s*:\s*(.+)\s*$", line)
+        if m_name:
+            last_name = m_name.group(1).strip()
+            continue
+        m_id = re.search(r"Snapshot\s+Id\s*:\s*(\d+)\s*$", line)
+        if m_id and last_name == snapshot_name:
+            try:
+                return int(m_id.group(1))
+            except Exception:
+                return None
+    return None
+
+
+def esxi_remove_snapshot(
+    proxmox_ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    pass_file: str,
+    vmid: int,
+    snapshot_id: int,
+) -> None:
+    remote = f"vim-cmd vmsvc/snapshot.remove {vmid} {snapshot_id} 0"
+    code, out, err = esxi_run_cmd(proxmox_ssh, esxi_host, esxi_user, pass_file, remote, timeout=300)
+    if code != 0:
+        raise RuntimeError(f"Rimozione snapshot fallita (code={code}): {err or out}")
+
+
+def esxi_run_cmd_direct(esxi_ssh: SSHClient, remote_cmd: str, timeout: Optional[int] = None) -> Tuple[int, str, str]:
+    return esxi_ssh.run(remote_cmd, timeout=timeout)
+
+
+def _parse_getallvms_output(out: str) -> Dict[str, Any]:
+    vms: Dict[str, Any] = {}
+    for line in out.splitlines():
+        t = line.rstrip()
+        if not t:
+            continue
+        if t.lower().lstrip().startswith("vmid"):
+            continue
+        m = re.match(r"^\s*(\d+)\s+(.+?)\s+(\[[^\]]+\]\s+.+?\.vmx)\s", t)
+        if not m:
+            m2 = re.match(r"^\s*(\d+)\s+(.+?)\s+(\[[^\]]+\]\s+.+?\.vmx)\s*$", t)
+            if not m2:
+                continue
+            vmid_s, name, file_col = m2.group(1), m2.group(2), m2.group(3)
+        else:
+            vmid_s, name, file_col = m.group(1), m.group(2), m.group(3)
+        try:
+            vmid = int(vmid_s)
+        except Exception:
+            continue
+        ds_m = re.match(r"^\[([^\]]+)\]\s+(.+)$", file_col.strip())
+        datastore = ds_m.group(1).strip() if ds_m else ""
+        relpath = ds_m.group(2).strip() if ds_m else file_col.strip()
+        vms[str(vmid)] = {"name": name.strip(), "config": {"datastore": datastore, "path": relpath}}
+    return vms
+
+
+def list_vms_direct(esxi_ssh: SSHClient) -> Dict[str, Any]:
+    code, out, err = esxi_run_cmd_direct(esxi_ssh, "vim-cmd vmsvc/getallvms", timeout=90)
+    if code != 0:
+        raise RuntimeError(f"Errore getallvms (code={code}): {err or out}")
+    return _parse_getallvms_output(out)
+
+
+def esxi_power_state_direct(esxi_ssh: SSHClient, vmid: int) -> str:
+    code, out, err = esxi_run_cmd_direct(esxi_ssh, f"vim-cmd vmsvc/power.getstate {vmid}", timeout=30)
+    if code != 0:
+        return ""
+    lines = [l.strip() for l in out.splitlines() if l.strip()]
+    return lines[-1] if lines else ""
+
+
+def esxi_get_summary_direct(esxi_ssh: SSHClient, vmid: int) -> str:
+    code, out, err = esxi_run_cmd_direct(esxi_ssh, f"vim-cmd vmsvc/get.summary {vmid}", timeout=60)
+    if code != 0:
+        raise RuntimeError(err or out)
+    return out
+
+
+def esxi_get_config_direct(esxi_ssh: SSHClient, vmid: int) -> str:
+    code, out, err = esxi_run_cmd_direct(esxi_ssh, f"vim-cmd vmsvc/get.config {vmid}", timeout=60)
+    if code != 0:
+        raise RuntimeError(err or out)
+    return out
+
+
+def esxi_get_filelayout_direct(esxi_ssh: SSHClient, vmid: int) -> str:
+    code, out, err = esxi_run_cmd_direct(esxi_ssh, f"vim-cmd vmsvc/get.filelayout {vmid}", timeout=60)
+    if code != 0:
+        raise RuntimeError(err or out)
+    return out
+
+
+def esxi_get_devices_direct(esxi_ssh: SSHClient, vmid: int) -> str:
+    code, out, err = esxi_run_cmd_direct(esxi_ssh, f"vim-cmd vmsvc/device.getdevices {vmid}", timeout=60)
+    if code != 0:
+        raise RuntimeError(err or out)
+    return out

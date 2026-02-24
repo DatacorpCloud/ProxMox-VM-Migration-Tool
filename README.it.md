@@ -29,6 +29,36 @@ Avvio rapido
   - Seleziona storage Proxmox e opzioni (UEFI/OVMF se la VM originale usa UEFI).
   - Avvia la migrazione e monitora l’avanzamento.
 
+Interfaccia Web (Backup & Restore)
+
+Il progetto include anche un’interfaccia web (Flask) che espone:
+
+- Gestione risorse (credenziali Proxmox / ESXi salvate localmente in SQLite)
+- Gestione storage repository (NFS / iSCSI / percorsi Windows montati, es. `Z:\...`)
+- Flussi di backup (ESXi e Proxmox)
+- Flussi di restore:
+  - Restore “semplice” (auto-rileva la piattaforma del backup, nome VM opzionale, avvio acceso/spento)
+  - Restore “multi‑piattaforma” (Proxmox ⇄ VMware) usando un worker Proxmox quando serve
+- Vista Job e streaming eventi (progress + log)
+- Metriche Home (numero backup, GB totali, VM in backup, VM migrate)
+
+Avvio Web
+
+- Installa dipendenze: `pip install -r vm-migration-tool/requirements.txt`
+- Avvia server: `python vm-migration-tool/main.py --web --host localhost --port 8080`
+- Apri: http://localhost:8080
+
+Note
+
+- Limite MVP: un job alla volta (backup/restore/migrazione) per stabilità.
+- Gli storage repository possono essere verificati dalla UI (pulsante “Test”) per validare l’accesso prima dell’uso.
+- Set minimo per deploy solo web:
+  - `vm-migration-tool/main.py`
+  - `vm-migration-tool/ui/web_app.py`
+  - `vm-migration-tool/core/*`
+  - `vm-migration-tool/requirements.txt`
+  - Opzionali per persistenza: `vm-migration-tool/app.sqlite3`, `vm-migration-tool/repository/`
+
 Sicurezza e log
 
 - Redazione automatica dei segreti nei log applicativi; le password non compaiono in chiaro.
@@ -61,3 +91,22 @@ Istruzioni operative (Opzioni & Migrazione)
 Screenshot (esempio)
 
 ![Opzioni & Migrazione](docs/screenshots/options_migration.png)
+
+Screenshot Web UI
+
+1. Home
+   ![Home](docs/screenshots/home.png)
+2. Risorse • Storage
+   ![Storage](docs/screenshots/storage.png)
+3. Job
+   ![Job](docs/screenshots/job.png)
+4. Risorse • Virtualizzatori (elenco)
+   ![Elenco virtualizzatori](docs/screenshots/elen-virtualizzatori.png)
+5. Risorse • Virtualizzatori (Add virtualizzatore)
+   ![Add virtualizzatore](docs/screenshots/virtualizzatore.png)
+6. Backup
+   ![Backup](docs/screenshots/backup.png)
+7. Restore multi‑piattaforma
+   ![Restore cross-platform](docs/screenshots/restorecrossplat.png)
+8. Live Cross Migration
+   ![Live cross migration](docs/screenshots/livecrossmigration.png)

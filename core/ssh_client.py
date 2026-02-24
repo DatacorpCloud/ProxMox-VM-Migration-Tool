@@ -1,6 +1,8 @@
 import paramiko
 import logging
 import time
+import os
+import shlex
 from typing import Tuple, Optional, Callable
 
 
@@ -355,3 +357,93 @@ class SSHClient:
             return True
         except FileNotFoundError:
             return False
+
+    def get_file(
+        self,
+        remote_path: str,
+        local_path: str,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+    ):
+        if not self._sftp:
+            raise RuntimeError("SFTP non disponibile: connetti prima l'SSHClient")
+        os.makedirs(os.path.dirname(os.path.abspath(local_path)), exist_ok=True)
+        try:
+            if progress_cb:
+                self._sftp.get(remote_path, local_path, callback=progress_cb)
+            else:
+                self._sftp.get(remote_path, local_path)
+            return
+        except Exception as e:
+            msg = str(e or "")
+            if "failure" not in msg.lower():
+                raise
+            total = 0
+            try:
+                total = int(self._sftp.stat(remote_path).st_size)
+            except Exception:
+                total = 0
+            self._emit(f"SFTP get fallito, fallback stream: {remote_path} ({msg})")
+            self._get_file_via_exec(remote_path, local_path, total=total, progress_cb=progress_cb)
+
+    def _get_file_via_exec(
+        self,
+        remote_path: str,
+        local_path: str,
+        total: int = 0,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+    ):
+        if not self._client:
+            raise RuntimeError("SSHClient non connesso")
+        cmd = "cat " + shlex.quote(remote_path)
+        stdin, stdout, stderr = self._client.exec_command(cmd)
+        chan = stdout.channel
+        transferred = 0
+        exit_status: Optional[int] = None
+        err_text = ""
+        try:
+            with open(local_path, "wb") as f:
+                while True:
+                    chunk = chan.recv(1024 * 256)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    transferred += len(chunk)
+                    if progress_cb and total > 0:
+                        try:
+                            progress_cb(transferred, total)
+                        except Exception:
+                            pass
+            exit_status = chan.recv_exit_status()
+            if exit_status != 0:
+                try:
+                    err_text = stderr.read().decode("utf-8", errors="replace")
+                except Exception:
+                    err_text = ""
+        finally:
+            try:
+                stdin.close()
+            except Exception:
+                pass
+            try:
+                stdout.close()
+            except Exception:
+                pass
+            try:
+                stderr.close()
+            except Exception:
+                pass
+        if exit_status not in (None, 0):
+            raise OSError(err_text or f"Download via exec fallito (exit={exit_status})")
+
+    def put_file(
+        self,
+        local_path: str,
+        remote_path: str,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+    ):
+        if not self._sftp:
+            raise RuntimeError("SFTP non disponibile: connetti prima l'SSHClient")
+        if progress_cb:
+            self._sftp.put(local_path, remote_path, callback=progress_cb)
+        else:
+            self._sftp.put(local_path, remote_path)
