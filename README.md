@@ -1,4 +1,60 @@
-VM Migration: ESXi → Proxmox
+[![View on GitHub](https://img.shields.io/badge/View%20on-GitHub-black?logo=github)](https://github.com/DatacorpCloud/ProxMox-VM-Migration-Tool)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Proxmox%20%7C%20ESXi%20%7C%20Windows-orange.svg)](https://github.com/DatacorpCloud/ProxMox-VM-Migration-Tool)
+
+VM Backup & Migration Tool (Proxmox ⇄ ESXi)
+
+Web UI (Backup & Restore)
+
+Lightweight web interface (Flask) focused on day-to-day backup/restore operations:
+
+- Resource management (Proxmox / ESXi credentials stored locally in SQLite)
+- Repository storage management (NFS / iSCSI / Windows mounted paths)
+- Backup workflows (ESXi and Proxmox)
+- Restore workflows:
+  - Simple restore (auto-detect backup platform, optional VM name, start on/off)
+  - Cross-platform restore (Proxmox ⇄ VMware) using a Proxmox worker when needed
+- Jobs view and real-time job events (progress and logs)
+- Home dashboard metrics (backups count, total GB, VMs in backup, migrated VMs)
+
+Run the Web UI
+
+- Install deps: `pip install -r vm-migration-tool/requirements.txt`
+- Start server: `python vm-migration-tool/main.py --web --host localhost --port 8080`
+- Open: http://localhost:8080
+
+Notes
+
+- MVP limitation: one job at a time (backup/restore/migration).
+- Repo storages can be tested from the UI ("Test" button) to validate access before using them.
+- Minimal runtime set for web-only deployments:
+  - `vm-migration-tool/main.py`
+  - `vm-migration-tool/ui/web_app.py`
+  - `vm-migration-tool/core/*`
+  - `vm-migration-tool/requirements.txt`
+  - Optional for persistence: `vm-migration-tool/app.sqlite3`, `vm-migration-tool/repository/`
+
+Web UI Screenshots
+
+1. Home
+   ![Home](docs/screenshots/home.png)
+2. Resources • Storage
+   ![Storage](docs/screenshots/storage.png)
+3. Jobs
+   ![Job](docs/screenshots/job.png)
+4. Resources • Virtualizers (list)
+   ![Virtualizers List](docs/screenshots/elen-virtualizzatori.png)
+5. Resources • Virtualizers (add)
+   ![Add Virtualizer](docs/screenshots/virtualizzatore.png)
+6. Backup
+   ![Backup](docs/screenshots/backup.png)
+7. Cross-platform restore
+   ![Restore Cross-platform](docs/screenshots/restorecrossplat.png)
+8. Live cross migration
+   ![Live Cross Migration](docs/screenshots/livecrossmigration.png)
+
+Desktop UI (legacy: ESXi → Proxmox migration)
 
 Overview
 
@@ -29,36 +85,6 @@ Quick Start
   - Pick Proxmox storage and options (UEFI/OVMF if original VM uses UEFI).
   - Start migration and monitor progress.
 
-Web UI (Backup & Restore)
-
-This project also includes a lightweight web interface (Flask) that exposes:
-
-- Resource management (Proxmox / ESXi credentials stored locally in SQLite)
-- Repository storage management (NFS / iSCSI / Windows mounted paths)
-- Backup workflows (ESXi and Proxmox)
-- Restore workflows:
-  - Simple restore (auto-detect backup platform, optional VM name, start on/off)
-  - Cross-platform restore (Proxmox ⇄ VMware) using a Proxmox worker when needed
-- Jobs view and real-time job events (progress and logs)
-- Home dashboard metrics (backups count, total GB, VMs in backup, migrated VMs)
-
-Run the Web UI
-
-- Install deps: `pip install -r vm-migration-tool/requirements.txt`
-- Start server: `python vm-migration-tool/main.py --web --host localhost --port 8080`
-- Open: http://localhost:8080
-
-Notes
-
-- MVP limitation: one job at a time (backup/restore/migration) to keep runs deterministic.
-- Repo storages can be tested from the UI ("Test" button) to validate access before using them.
-- Minimal runtime set for web-only deployments:
-  - `vm-migration-tool/main.py`
-  - `vm-migration-tool/ui/web_app.py`
-  - `vm-migration-tool/core/*`
-  - `vm-migration-tool/requirements.txt`
-  - Optional for persistence: `vm-migration-tool/app.sqlite3`, `vm-migration-tool/repository/`
-
 Security & Logging
 
 - Password sanitization in application logs; sensitive values are redacted.
@@ -88,7 +114,7 @@ Operational Instructions (Options & Migration)
 - UEFI/OVMF: enable only if the original VM uses UEFI/EFI firmware; keep disabled for legacy BIOS.
 - Press `Prepare/Run Migration` and follow the progress bars (copy and import/conversion).
 
-Screenshots
+Desktop UI Screenshots
 
 1. Project Creation
    ![Project Creation](docs/screenshots/projct.PNG)
@@ -96,22 +122,3 @@ Screenshots
    ![Connection and Scan](docs/screenshots/connection_scan.PNG)
 3. Options and Migration
    ![Options and Migration](docs/screenshots/options_migration.png)
-
-Web UI Screenshots
-
-1. Home
-   ![Home](docs/screenshots/home.png)
-2. Resources • Storage
-   ![Storage](docs/screenshots/storage.png)
-3. Jobs
-   ![Job](docs/screenshots/job.png)
-4. Resources • Virtualizers (list)
-   ![Virtualizers List](docs/screenshots/elen-virtualizzatori.png)
-5. Resources • Virtualizers (add)
-   ![Add Virtualizer](docs/screenshots/virtualizzatore.png)
-6. Backup
-   ![Backup](docs/screenshots/backup.png)
-7. Cross-platform restore
-   ![Restore Cross-platform](docs/screenshots/restorecrossplat.png)
-8. Live cross migration
-   ![Live Cross Migration](docs/screenshots/livecrossmigration.png)
