@@ -170,17 +170,20 @@ def copy_vmdk_flat_with_progress(
     start_ts = time.time()
     last_size = -1
     last_change_ts = start_ts
+    STALL_TIMEOUT = 120.0  # secondi senza progressi prima di abortire
     # Poll progress (robusto: segue crescita file e verifica processo)
     while True:
         transferred = file_size_bytes(ssh, dest_data)
         if transferred != last_size:
             last_size = transferred
             last_change_ts = time.time()
+        now = time.time()
+        stall_secs = now - last_change_ts
         pct = 0.0
         if capacity_bytes > 0:
             pct = min(100.0, transferred * 100.0 / capacity_bytes)
         if progress_cb:
-            elapsed = max(0.001, time.time() - start_ts)
+            elapsed = max(0.001, now - start_ts)
             rate_bps = transferred / elapsed if elapsed > 0 else 0.0
             rate_mibs = rate_bps / (1024 * 1024)
             eta_sec = 0.0
@@ -202,8 +205,17 @@ def copy_vmdk_flat_with_progress(
             f"pgrep -n -f 'sshpass.*scp.*{src_name}' >/dev/null && echo RUN || echo STOP"
         )
         is_run = "RUN" in out_run
-        if not is_run and (time.time() - last_change_ts) > 3.0:
+        if not is_run and stall_secs > 3.0:
             break
+        # Timeout di stallo: processo in esecuzione ma nessun byte trasferito per troppo tempo
+        if stall_secs > STALL_TIMEOUT:
+            # legge il log SCP per includere il motivo nel messaggio di errore
+            _, scp_log, _ = ssh.run("cat /tmp/scp_copy.log 2>/dev/null | tail -n 5")
+            hint = f" Log SCP: {scp_log.strip()}" if (scp_log or "").strip() else " Controlla /tmp/scp_copy.log su Proxmox."
+            raise RuntimeError(
+                f"Trasferimento bloccato: 0 byte copiati in {int(stall_secs)}s. "
+                f"Verifica che ESXi ({src_data}) sia raggiungibile via SSH/SCP da Proxmox.{hint}"
+            )
         # piccolo sleep via remoto per ridurre chiamate
         ssh.run("sleep 1")
     # Aggiornamento finale coerente con dimensione attuale

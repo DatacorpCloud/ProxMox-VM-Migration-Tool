@@ -253,6 +253,26 @@ def execute_full_migration(
         code, out, err = qm_attach_scsi(ssh, vmid, disk_id, index=idx)
         logs.append(f"qm set --scsi{idx} -> code={code}\n{out}\n{err}")
 
+    # 5) Pulizia file temporanei (VMDK copiati + eventuale file convertito)
+    if progress_cb:
+        try:
+            progress_cb(0.0, "Cleanup: rimozione file temporanei…")
+        except Exception:
+            pass
+    for item in copied_disks:
+        vmdk_local = str(item["vmdk_local"])
+        # descriptor .vmdk
+        ssh.run(f"rm -f '{vmdk_local}' 2>/dev/null || true")
+        # flat/delta (stesso nome base + -flat.vmdk o -delta.vmdk)
+        flat_name = guess_vmdk_data_rel(vmdk_local.split("/")[-1])
+        flat_path = f"{dest_dir}/{flat_name}"
+        ssh.run(f"rm -f '{flat_path}' 2>/dev/null || true")
+        # file convertito (se presente)
+        idx = int(item["idx"])
+        converted = f"{dest_dir}/{name}-disk{idx}.{convert_fmt}"
+        ssh.run(f"rm -f '{converted}' 2>/dev/null || true")
+        logs.append(f"Cleanup tmp: rimossi file in {dest_dir}")
+
     if use_uefi:
         code, out, err = qm_set_uefi(ssh, vmid, storage)
         logs.append(f"qm set UEFI -> code={code}\n{out}\n{err}")
