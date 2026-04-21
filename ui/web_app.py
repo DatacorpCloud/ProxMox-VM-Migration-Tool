@@ -462,7 +462,7 @@ INDEX_HTML = """<!doctype html>
           <option value="raw">raw</option>
           <option value="vmdk">vmdk</option>
         </select>
-        <div>Dest dir (opz.)</div><input id="destDir" placeholder="/mnt/pve/<storage>/tmp/<vm>" />
+        <div>Dest dir (opz.)</div><select id="destDir" disabled><option value="">Auto (calcolata da storage)</option></select>
       </div>
 
       <div class="row actions">
@@ -872,7 +872,18 @@ INDEX_HTML = """<!doctype html>
       async function loadRepoPath() {
         try {
           const data = await apiGet("/api/settings/repo");
-          if (data && data.path && el("repoPath")) el("repoPath").value = data.path;
+          if (!data) return;
+          if (el("repoPath")) el("repoPath").value = data.configured || "";
+          if (el("sysStatus")) {
+            if (data.warning) {
+              el("sysStatus").textContent = "⚠ " + data.warning + " → " + (data.path || "");
+            } else if (data.path) {
+              const label = (data.configured || "").trim()
+                ? "Percorso effettivo: " + data.path
+                : "Percorso effettivo (default): " + data.path;
+              el("sysStatus").textContent = label;
+            }
+          }
         } catch (e) {}
       }
 
@@ -1078,6 +1089,8 @@ INDEX_HTML = """<!doctype html>
       if (el("navCross")) el("navCross").addEventListener("click", async () => {
         showPage("pageCross");
         try { await loadResources(); } catch (e) {}
+        try { await prefillFromPmxSel(); } catch (e) {}
+        try { await loadRepoStorages(); } catch (e) {}
       });
       if (el("navJobs")) el("navJobs").addEventListener("click", async () => {
         showPage("pageJobs");
@@ -1113,6 +1126,10 @@ INDEX_HTML = """<!doctype html>
         updateMigrationSelection();
       });
       el("repoEsxiDatastore").addEventListener("change", () => updateMigrationSelection());
+
+      el("pmxSel").addEventListener("change", async () => {
+        try { await prefillFromPmxSel(); } catch (e) {}
+      });
 
       el("btnRepoPathSave").addEventListener("click", async () => {
         const p = (el("repoPath").value || "").trim();
@@ -1293,6 +1310,41 @@ INDEX_HTML = """<!doctype html>
         if (data.next_vmid && !String(el("vmid").value || "").trim()) {
           el("vmid").value = String(data.next_vmid);
         }
+      }
+
+      async function refreshCrossTmpDirs() {
+        const pmxId = (el("pmxSel").value || "").trim();
+        const sel = el("destDir");
+        if (!sel) return;
+        if (!pmxId) {
+          sel.innerHTML = '<option value="">Auto (calcolata da storage)</option>';
+          sel.disabled = true;
+          return;
+        }
+        try {
+          const data = await api("/api/infrastructure/proxmox/tmpdirs", { pmx_id: pmxId });
+          const auto = [{ value: "", label: "Auto (calcolata da storage)" }];
+          const items = (data.items || []).map(it => ({ value: it.value, label: it.label }));
+          fillSelect(sel, auto.concat(items), it => it.label);
+          sel.disabled = false;
+        } catch (e) {
+          sel.innerHTML = '<option value="">Auto (calcolata da storage)</option>';
+          sel.disabled = false;
+        }
+      }
+
+      async function prefillFromPmxSel() {
+        const pmxId = (el("pmxSel").value || "").trim();
+        if (!pmxId) return;
+        const data = await api("/api/infrastructure/proxmox/prefill", { pmx_id: pmxId });
+        const storages = (data.storages || []).map(s => ({ value: s, label: s }));
+        const bridges = (data.bridges || []).map(b => ({ value: b, label: b }));
+        fillSelect(el("storageSelect"), storages, it => it.label);
+        fillSelect(el("bridgeSelect"), bridges, it => it.label);
+        if (data.next_vmid && !String(el("vmid").value || "").trim()) {
+          el("vmid").value = String(data.next_vmid);
+        }
+        try { await refreshCrossTmpDirs(); } catch (e) {}
       }
 
       async function prefillProxmoxTargetRestore() {
@@ -1580,6 +1632,7 @@ INDEX_HTML = """<!doctype html>
             pmx_id: el("pmxSel").value,
             esxi_id: el("esxiSel").value,
             snapshot: el("snapshot").value === "true",
+            repo_storage_id: (el("backupRepoStorage") ? (el("backupRepoStorage").value || "").trim() : ""),
           });
           const jobId = data.job_id;
           el("jobStatus").textContent = "Job: " + jobId;
