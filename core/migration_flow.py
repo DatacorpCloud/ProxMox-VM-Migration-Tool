@@ -18,6 +18,7 @@ from .transfer import (
     copy_vmdk_from_esxi,
     copy_vmdk_flat_with_progress,
     guess_vmdk_data_rel,
+    resolve_vmdk_data_rel,
     qemu_img_convert,
 )
 from .esxi_import import (
@@ -175,8 +176,8 @@ def execute_full_migration(
         vmdk_relpath = d.get("path", "")
         datastore = d.get("datastore", "")
         capacity = int(d.get("capacity", 0))
-        # calcolo nome del file dati (flat per base, delta per snapshot)
-        flat_rel = guess_vmdk_data_rel(vmdk_relpath)
+        # calcolo nome del file dati reale su ESXi (flat, delta o sesparse)
+        flat_rel = resolve_vmdk_data_rel(ssh, esxi_host, esxi_user, "/root/esxi_pass.txt", datastore, vmdk_relpath)
         # copia con progress
         dest_flat = copy_vmdk_flat_with_progress(
             ssh,

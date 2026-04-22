@@ -258,3 +258,29 @@ def esxi_get_devices_direct(esxi_ssh: SSHClient, vmid: int) -> str:
     if code != 0:
         raise RuntimeError(err or out)
     return out
+
+
+def esxi_get_vm_firmware(
+    proxmox_ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    pass_file: str,
+    datastore: str,
+    vmx_relpath: str,
+) -> str:
+    """
+    Legge il campo 'firmware' dal file .vmx della VM su ESXi.
+    Ritorna 'efi' se UEFI, 'bios' altrimenti.
+    """
+    vmx_path = f"/vmfs/volumes/{datastore}/{vmx_relpath}"
+    cmd = (
+        f"sshpass -f {shlex.quote(pass_file)} ssh "
+        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"{shlex.quote(esxi_user)}@{shlex.quote(esxi_host)} "
+        f"\"grep -i '^firmware' {shlex.quote(vmx_path)} 2>/dev/null || echo ''\""
+    )
+    code, out, err = proxmox_ssh.run(cmd, timeout=20)
+    line = (out or "").strip().lower()
+    if "efi" in line:
+        return "efi"
+    return "bios"

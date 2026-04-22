@@ -151,6 +151,47 @@ def file_size_bytes(ssh: SSHClient, path: str) -> int:
         return 0
 
 
+def resolve_vmdk_data_rel(
+    ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    pass_file: str,
+    datastore: str,
+    vmdk_relpath: str,
+) -> str:
+    """
+    Determina il nome reale del file dati associato al descriptor VMDK su ESXi.
+    Prova in ordine: -flat.vmdk, -delta.vmdk, -sesparse.vmdk.
+    Ritorna il primo che esiste, altrimenti ritorna il guess di default.
+    """
+    rel = vmdk_relpath
+    candidates = []
+    if rel.lower().endswith(".vmdk"):
+        base = rel[:-5]
+        if "-000" in base:
+            # Snapshot VMFS6: prova delta poi sesparse
+            candidates = [base + "-delta.vmdk", base + "-sesparse.vmdk"]
+        else:
+            candidates = [base + "-flat.vmdk"]
+    else:
+        candidates = [rel + "-flat.vmdk"]
+
+    for candidate in candidates:
+        vmx_path = f"/vmfs/volumes/{datastore}/{candidate}"
+        cmd = (
+            f"sshpass -f {pass_file} ssh "
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"{esxi_user}@{esxi_host} "
+            f"\"test -f '{vmx_path}' && echo EXISTS || echo MISSING\""
+        )
+        code, out, err = ssh.run(cmd, timeout=15)
+        if "EXISTS" in (out or ""):
+            return candidate
+
+    # Fallback al guess standard
+    return guess_vmdk_data_rel(vmdk_relpath)
+
+
 def copy_vmdk_flat_with_progress(
     ssh: SSHClient,
     esxi_host: str,
