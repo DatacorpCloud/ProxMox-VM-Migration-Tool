@@ -268,18 +268,65 @@ class SSHClient:
         import re
 
         def _try_parse_progress(text: str):
-            # Esempio output qm importdisk: "transferred ... (99.77%)"
-            # Esempio output qemu-img -p: "42.0%" (senza parentesi)
-            m = re.search(r"\(\s*([0-9]+(?:\.[0-9]+)?)%\s*\)", text)
-            if not m:
-                m = re.search(r"([0-9]+(?:\.[0-9]+)?)%", text)
-            if m:
+            """
+            Riconosce vari formati di progress:
+              - qemu-img -p:    "    (42.50/100%)"   → estrai 42.50 (NON 100)
+              - qm importdisk:  "transferred ... (99.77%)"
+              - generico:       "42.0%" su una riga
+            qemu-img scrive su pipe usando '\\r' come separatore: il chunk può
+            contenere più update concatenati. Splittiamo su '\\r' e '\\n' e
+            prendiamo l'ultimo aggiornamento valido.
+            """
+            pct: Optional[float] = None
+            last_msg = text.strip()
+            # Splitta su CR/LF per gestire output \r-overwrite di qemu-img
+            for chunk in re.split(r"[\r\n]+", text):
+                chunk_s = chunk.strip()
+                if not chunk_s:
+                    continue
+                # 1) qemu-img: "(NN.NN/100%)" → primo numero
+                m1 = re.search(
+                    r"\(\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*100\s*%\s*\)",
+                    chunk_s,
+                )
+                if m1:
+                    try:
+                        pct = float(m1.group(1))
+                        last_msg = chunk_s
+                        continue
+                    except Exception:
+                        pass
+                # 2) qm importdisk: "(NN.NN%)" — solo se NON è il pattern /100%
+                m2 = re.search(
+                    r"\(\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*\)",
+                    chunk_s,
+                )
+                if m2 and "/100%" not in chunk_s and "/ 100%" not in chunk_s:
+                    try:
+                        pct = float(m2.group(1))
+                        last_msg = chunk_s
+                        continue
+                    except Exception:
+                        pass
+                # 3) generico "NN.NN%" come fallback (solo se nessun pattern parentetico
+                # ha matchato: evita di catturare il "100" di "(NN.NN/100%)")
+                if pct is None:
+                    m3 = re.search(r"\b([0-9]+(?:\.[0-9]+)?)\s*%", chunk_s)
+                    if m3 and "/100%" not in chunk_s and "/ 100%" not in chunk_s:
+                        try:
+                            pct = float(m3.group(1))
+                            last_msg = chunk_s
+                        except Exception:
+                            pass
+
+            if pct is not None and parse_cb:
+                # Clamp tra 0 e 100
+                pct = max(0.0, min(100.0, pct))
                 try:
-                    pct = float(m.group(1))
-                    if parse_cb:
-                        parse_cb(pct, text.strip())
+                    parse_cb(pct, last_msg)
                 except Exception:
                     pass
+
             # Completamento esplicito
             if "successfully imported disk" in text.lower():
                 try:

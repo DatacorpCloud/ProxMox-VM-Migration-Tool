@@ -12,6 +12,7 @@ from .proxmox import (
     qm_set_uefi,
     parse_importdisk_disk_id,
     qm_attach_scsi,
+    qm_attach_disk,
 )
 from .transfer import (
     compute_dest_dir,
@@ -27,6 +28,9 @@ from .esxi_import import (
     esxi_create_snapshot,
     esxi_find_snapshot_id_by_name,
     esxi_remove_snapshot,
+    esxi_get_vm_firmware,
+    esxi_get_vm_guestos,
+    map_guestos_to_proxmox,
 )
 
 
@@ -79,6 +83,8 @@ def execute_full_migration(
     convert_fmt: str = "qcow2",
     use_esxi_snapshot: bool = False,
     progress_cb: Optional[Callable[[float, str], None]] = None,
+    guest_os: Optional[str] = None,
+    windows_link_down: bool = False,
 ) -> List[str]:
     logs: List[str] = []
     # 1) Copia VMDK su Proxmox
@@ -103,6 +109,48 @@ def execute_full_migration(
     power = str(selected_vm_info.get("power", "") or "")
     if power == "poweredOn" and not use_esxi_snapshot:
         raise RuntimeError("VM accesa su ESXi: abilita Snapshot oppure spegni la VM prima di migrare")
+
+    # ---- Rilevamento OS guest e profilo Proxmox ----
+    # Se guest_os non fornito, prova a leggerlo dal .vmx ESXi.
+    if not guest_os:
+        cfg = selected_vm_info.get("config", {}) if isinstance(selected_vm_info, dict) else {}
+        cfg_ds = (cfg.get("datastore") or "").strip()
+        cfg_vmx = (cfg.get("path") or "").strip()
+        if cfg_ds and cfg_vmx:
+            try:
+                guest_os = esxi_get_vm_guestos(
+                    ssh, esxi_host, esxi_user, "/root/esxi_pass.txt", cfg_ds, cfg_vmx
+                )
+                logs.append(f"guestOS rilevato dal .vmx ESXi: '{guest_os or '(vuoto)'}'")
+            except Exception as e:
+                logs.append(f"Impossibile leggere guestOS dal .vmx: {e}")
+                guest_os = ""
+
+    profile = map_guestos_to_proxmox(guest_os or "")
+    is_windows = bool(profile.get("is_windows"))
+    nic_model = profile.get("nic_model", "virtio")
+    bus = profile.get("bus", "scsi")
+    ostype = profile.get("ostype", "other")
+    machine = profile.get("machine") if use_uefi else None  # q35 solo per UEFI
+    scsihw = profile.get("scsihw", "virtio-scsi-single")
+    bios = "ovmf" if use_uefi else None
+    logs.append(
+        f"Profilo VM: ostype={ostype} bus={bus} nic={nic_model} "
+        f"machine={machine or 'default'} bios={bios or 'default'} "
+        f"is_windows={is_windows}"
+    )
+
+    # Adatta net0: sostituisci modello se l'utente ha passato 'virtio' ma il
+    # profilo richiede e1000 (Windows al primo boot, niente driver netkvm).
+    net0_final = net0 or ""
+    if is_windows and net0_final.lower().startswith("virtio"):
+        net0_final = "e1000" + net0_final[len("virtio"):]
+        logs.append(f"NIC: virtio → e1000 (Windows primo boot)")
+    if is_windows and windows_link_down and "link_down" not in net0_final:
+        # link_down=1 utile per evitare conflitti AD/DC al primo boot
+        sep = "," if "," in net0_final else ","
+        net0_final = net0_final + f"{sep}link_down=1"
+        logs.append("NIC: link_down=1 (Windows DC isolato)")
 
     snapshot_vmid: Optional[int] = None
     snapshot_id: Optional[int] = None
@@ -155,8 +203,20 @@ def execute_full_migration(
             raise RuntimeError("Snapshot creata ma Snapshot Id non trovato (non posso fare cleanup in sicurezza)")
         logs.append(f"Snapshot ESXi creata: vmid={snapshot_vmid} snapshot_id={snapshot_id} name={snapshot_name}")
 
-    # 2) Creazione VM su Proxmox
-    code, out, err = qm_create(ssh, vmid, name, memory, cores, net0)
+    # 2) Creazione VM su Proxmox (con ostype/machine/bios/scsihw già al create)
+    code, out, err = qm_create(
+        ssh,
+        vmid,
+        name,
+        memory,
+        cores,
+        net0_final,
+        ostype=ostype,
+        machine=machine,
+        bios=bios,
+        cpu="host",
+        scsihw=scsihw,
+    )
     logs.append(f"qm create -> code={code}\n{out}\n{err}")
     if code != 0:
         # Interrompi il flusso se la creazione VM fallisce (evita importdisk/set su VM inesistente)
@@ -168,6 +228,14 @@ def execute_full_migration(
                 progress_cb(0.0, f"Creazione VM {vmid} completata, preparo fasi successive…")
             except Exception:
                 pass
+
+    # 2b) UEFI subito dopo create (così l'efidisk si crea su VM già configurata
+    # con bios=ovmf e abbiamo i certificati 2023k pre-enrollati).
+    if use_uefi:
+        code_u, out_u, err_u = qm_set_uefi(ssh, vmid, storage)
+        logs.append(f"qm set UEFI -> code={code_u}\n{out_u}\n{err_u}")
+        if code_u != 0:
+            logs.append(f"AVVISO: configurazione UEFI fallita (code={code_u})")
 
     copied_disks: List[dict] = []
 
@@ -230,7 +298,7 @@ def execute_full_migration(
 
         if progress_cb:
             try:
-                progress_cb(0.0, f"Import: avvio importdisk su storage '{storage}'")
+                progress_cb(0.0, f"Import: avvio importdisk su storage '{storage}' (formato {convert_fmt})")
             except Exception:
                 pass
             start_ts = time.time()
@@ -246,13 +314,26 @@ def execute_full_migration(
                     eta = elapsed * (100.0 - pct) / pct
                 progress_cb(pct, f"{msg} — elapsed {_fmt_t(elapsed)} — ETA {_fmt_t(eta)}")
 
-            code, out, err = qm_importdisk_with_progress(ssh, vmid, import_source, storage, _relay)
+            code, out, err = qm_importdisk_with_progress(
+                ssh, vmid, import_source, storage, _relay, fmt=convert_fmt
+            )
         else:
-            code, out, err = qm_importdisk(ssh, vmid, import_source, storage)
+            code, out, err = qm_importdisk(ssh, vmid, import_source, storage, fmt=convert_fmt)
         logs.append(f"qm importdisk (disk {idx}) -> code={code}\n{out}\n{err}")
         disk_id = parse_importdisk_disk_id(out) or f"{storage}:vm-{vmid}-disk-{idx}"
-        code, out, err = qm_attach_scsi(ssh, vmid, disk_id, index=idx)
-        logs.append(f"qm set --scsi{idx} -> code={code}\n{out}\n{err}")
+        # Aggancia bus-aware: SATA per Windows (driver nativo), SCSI VirtIO per il resto.
+        # Per Linux/altri: discard=on + iothread=1 (richiede virtio-scsi-single).
+        code, out, err = qm_attach_disk(
+            ssh,
+            vmid,
+            disk_id,
+            index=idx,
+            bus=bus,
+            scsihw=scsihw,
+            discard=True,
+            iothread=(bus == "scsi"),
+        )
+        logs.append(f"qm set --{bus}{idx} -> code={code}\n{out}\n{err}")
 
     # 5) Pulizia file temporanei (VMDK copiati + eventuale file convertito)
     if progress_cb:
@@ -274,12 +355,26 @@ def execute_full_migration(
         ssh.run(f"rm -f '{converted}' 2>/dev/null || true")
         logs.append(f"Cleanup tmp: rimossi file in {dest_dir}")
 
-    if use_uefi:
-        code, out, err = qm_set_uefi(ssh, vmid, storage)
-        logs.append(f"qm set UEFI -> code={code}\n{out}\n{err}")
+    # UEFI già configurato prima dell'import (vedi step 2b).
+    # Lasciamo questa chiamata come no-op idempotente solo se per qualche motivo
+    # use_uefi è True ma il primo tentativo è fallito; non ripetiamo l'enroll
+    # certificati per evitare di toccare un efidisk già valido.
 
-    code, out, err = qm_set_boot(ssh, vmid, "scsi0")
-    logs.append(f"qm set --boot -> code={code}\n{out}\n{err}")
+    # Boot order coerente col bus scelto (sata0 per Windows, scsi0 per il resto)
+    boot_dev = f"{bus}0"
+    code, out, err = qm_set_boot(ssh, vmid, boot_dev)
+    logs.append(f"qm set --boot order={boot_dev} -> code={code}\n{out}\n{err}")
+
+    # Per VM Windows: monta automaticamente l'ISO virtio-win se presente in
+    # local:iso (fallback silenzioso se non c'è). Utile per installare i driver
+    # dopo il primo boot.
+    if is_windows:
+        code_iso, out_iso, err_iso = ssh.run(
+            "test -f /var/lib/vz/template/iso/virtio-win.iso && "
+            f"qm set {vmid} --ide2 local:iso/virtio-win.iso,media=cdrom || true"
+        )
+        if "update VM" in (out_iso or ""):
+            logs.append(f"ISO virtio-win montata su ide2 -> {out_iso.strip()}")
 
     code, out, err = qm_start(ssh, vmid)
     logs.append(f"qm start -> code={code}\n{out}\n{err}")

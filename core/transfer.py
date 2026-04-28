@@ -285,11 +285,25 @@ def qemu_img_convert(
     compress: bool = True,
     progress_cb: Optional[Callable[[float, str], None]] = None,
 ) -> Tuple[int, str, str]:
-    """Esegue qemu-img convert con progress (-p) e inoltra avanzamento alla UI."""
+    """
+    Esegue qemu-img convert con progress (-p) e inoltra avanzamento alla UI.
+
+    Note implementative:
+    - stdbuf -oL -eL forza line-buffering: senza questo, qemu-img bufferizza
+      il progress finché la pipe non si riempie (problema tipico quando lo
+      stdout NON è una TTY, come succede via Paramiko).
+    - qemu-img stampa "(XX.XX/100%)" usando '\\r' come terminatore, quindi
+      l'ssh client deve fare split su '\\r' (vedi _try_parse_progress in
+      core/ssh_client.py).
+    """
     flag_c = "-c" if compress and fmt == "qcow2" else ""
-    cmd = f"qemu-img convert -p -O {fmt} {flag_c} '{src_image}' '{dest_image}'"
-    # Usa streaming con parser: riconosce sia (NN.NN%) sia NN.NN%
+    cmd = (
+        f"stdbuf -oL -eL qemu-img convert -p -O {fmt} {flag_c} "
+        f"'{src_image}' '{dest_image}'"
+    )
+
     def _relay(pct: float, msg: str):
         if progress_cb:
             progress_cb(pct, f"Convert: {msg}")
+
     return ssh.run_streaming_with_parser(cmd, parse_cb=_relay)

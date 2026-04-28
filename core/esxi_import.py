@@ -284,3 +284,92 @@ def esxi_get_vm_firmware(
     if "efi" in line:
         return "efi"
     return "bios"
+
+
+def esxi_get_vm_guestos(
+    proxmox_ssh: SSHClient,
+    esxi_host: str,
+    esxi_user: str,
+    pass_file: str,
+    datastore: str,
+    vmx_relpath: str,
+) -> str:
+    """
+    Legge il campo 'guestOS' dal file .vmx della VM su ESXi.
+    Ritorna stringa lowercase (es. 'windows9srv-64', 'ubuntu-64', 'freebsd13-64').
+    Stringa vuota se non trovata.
+    """
+    vmx_path = f"/vmfs/volumes/{datastore}/{vmx_relpath}"
+    cmd = (
+        f"sshpass -f {shlex.quote(pass_file)} ssh "
+        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"{shlex.quote(esxi_user)}@{shlex.quote(esxi_host)} "
+        f"\"grep -i '^guestOS' {shlex.quote(vmx_path)} 2>/dev/null || echo ''\""
+    )
+    code, out, err = proxmox_ssh.run(cmd, timeout=20)
+    m = re.search(r'guestos\s*=\s*"([^"]+)"', (out or "").lower())
+    return m.group(1).strip() if m else ""
+
+
+def map_guestos_to_proxmox(esxi_guestos: str) -> Dict[str, Any]:
+    """
+    Mappa il guestOS ESXi al profilo di configurazione Proxmox raccomandato.
+
+    Ritorna un dict con:
+        ostype     : valore per --ostype (win10/win11/l26/other/...)
+        is_windows : True se la VM è Windows (richiede SATA + e1000 al primo boot)
+        nic_model  : 'e1000' per Windows, 'virtio' altrimenti
+        bus        : 'sata' per Windows (driver nativo), 'scsi' altrimenti
+        machine    : 'q35' raccomandato per UEFI, None per lasciare default
+        scsihw     : 'virtio-scsi-single' per supportare iothread per disco
+    """
+    g = (esxi_guestos or "").lower()
+    profile: Dict[str, Any] = {
+        "ostype": "other",
+        "is_windows": False,
+        "nic_model": "virtio",
+        "bus": "scsi",
+        "machine": "q35",
+        "scsihw": "virtio-scsi-single",
+    }
+
+    if "windows" in g:
+        # win10 copre Server 2016/2019/2022 e Win 10. win11 per Win 11 / Server 2025.
+        if "11" in g or "2025" in g:
+            profile["ostype"] = "win11"
+        else:
+            profile["ostype"] = "win10"
+        profile["is_windows"] = True
+        profile["nic_model"] = "e1000"
+        profile["bus"] = "sata"
+        return profile
+
+    if any(
+        x in g
+        for x in (
+            "ubuntu",
+            "debian",
+            "centos",
+            "rhel",
+            "fedora",
+            "linux",
+            "suse",
+            "arch",
+            "rocky",
+            "alma",
+            "oracle",
+        )
+    ):
+        profile["ostype"] = "l26"
+        return profile
+
+    if "freebsd" in g or "pfsense" in g or "opnsense" in g:
+        # FreeBSD / pfSense: kernel BSD ha driver vtnet/virtio_blk nativi
+        profile["ostype"] = "other"
+        return profile
+
+    if "solaris" in g:
+        profile["ostype"] = "solaris"
+        return profile
+
+    return profile
