@@ -97,6 +97,26 @@ Note d’uso
 - Abilita UEFI/OVMF solo se la VM originale usa firmware UEFI/EFI; mantieni BIOS legacy altrimenti.
 - Dopo una migrazione puoi sceglierne un’altra e ripetere senza riavviare l’app.
 
+Profilo di migrazione OS-aware (dal 2026-04)
+
+Il tool legge `guestOS` dal `.vmx` sorgente e applica un profilo adatto al primo boot su Proxmox:
+
+| OS guest sorgente              | Bus disco | NIC    | ostype  | Note                                                                  |
+| ------------------------------ | --------- | ------ | ------- | --------------------------------------------------------------------- |
+| Windows Server 2016/2019/2022  | `sata0`   | e1000  | `win10` | Windows ha driver SATA + e1000 nativi: niente BSOD `viostor`.         |
+| Windows 11 / Server 2025       | `sata0`   | e1000  | `win11` | Idem.                                                                 |
+| Linux (Ubuntu/Debian/RHEL/…)   | `scsi0`   | virtio | `l26`   | SCSI VirtIO + `discard=on` + `iothread=1` (massime performance).      |
+| FreeBSD / pfSense / OPNsense   | `scsi0`   | virtio | `other` | Driver virtio nativi nel kernel BSD (`vtnet`, `virtio_blk`).          |
+| Altro / Sconosciuto            | `scsi0`   | virtio | `other` | Default sicuri.                                                       |
+
+Dopo un primo boot Windows riuscito puoi migrare manualmente a SCSI VirtIO con la procedura "dummy disk" (collega un disco SCSI VirtIO piccolo → riavvia → verifica in Device Manager che `viostor` sia caricato come boot driver → sposta il disco reale su SCSI). Il tool NON lo fa in automatico perché richiede conferma utente tra i passaggi.
+
+Web UI: nel form di migrazione il campo **"Profilo OS guest"** è impostato di default su `Auto (da .vmx)`. Forza un valore solo se il `.vmx` non contiene `guestOS` o se vuoi imporre un profilo diverso. Il campo read-only **"Hint profilo rilevato"** mostra il profilo risolto (bus / nic / ostype) prima di lanciare il job.
+
+UEFI: quando attivo, `efidisk0` viene creato con `pre-enrolled-keys=1` e `ms-cert=2023k`, evitando il warning *"UEFI 2011 certificates expire June 2026"* su Proxmox ≥ 8.4.
+
+Formato disco: `qm importdisk` viene invocato con `--format qcow2` per garantire che il disco di destinazione sia qcow2 anche quando il default dello storage sarebbe raw. Questo ripristina le funzionalità di snapshot/backup tipiche di qcow2.
+
 Roadmap
 
 - Vedi [ROADMAP.md](ROADMAP.md) per le funzionalità pianificate (migrazione multi-VM concorrente, robustezza trasferimenti, CI, e altro).
@@ -112,7 +132,22 @@ Istruzioni operative (Opzioni & Migrazione)
   - Per storage non montati (es. `local-lvm`), il fallback è `/root/tmp/<nomeVM>`.
   - Usa `Sfoglia…` se vuoi impostare un percorso personalizzato.
 - UEFI/OVMF: abilitalo solo se la VM originale usa firmware UEFI/EFI; tieni disabilitato per BIOS legacy.
-- Premi `Prepara/Esegui Migrazione` e segui le barre di avanzamento (copia e import/conversione).
+- **Profilo OS (Auto)**: il form rileva automaticamente la famiglia OS dal `.vmx` sorgente. Per Windows configura la VM su SATA + e1000 (primo boot sicuro). Per Linux/FreeBSD usa SCSI VirtIO con discard + iothread.
+- **Isolamento DC Windows**: spunta *"Windows: link giù primo boot"* quando migri un Domain Controller che non vuoi parli con i peer al primo boot.
+- Premi `Prepara/Esegui Migrazione` e segui le barre di avanzamento (copia e import/conversione). Entrambe le barre ora si aggiornano in tempo reale (progress di `qemu-img` e `qm importdisk`).
+
+Test
+
+Una piccola test suite copre i punti più soggetti a regressione:
+
+```
+python -m unittest discover -s tests -v
+```
+
+Test inclusi:
+- `tests/test_guestos_mapping.py` — mapping guestOS → profilo Proxmox (`map_guestos_to_proxmox`).
+- `tests/test_progress_parser.py` — bug fix del parser `(NN.NN/100%)` di `qemu-img`.
+- `tests/test_proxmox_commands.py` — forma dei comandi `qm` generati (formato importdisk, bus attach, certificati UEFI).
 
 Screenshot Desktop UI
 
