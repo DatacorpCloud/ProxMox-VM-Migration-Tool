@@ -31,6 +31,9 @@ from core.esxi_import import (
     esxi_find_snapshot_id_by_name,
     esxi_find_snapshot_id_by_name_direct,
     esxi_remove_snapshot,
+    esxi_get_vm_firmware,
+    esxi_get_vm_guestos,
+    map_guestos_to_proxmox,
 )
 from core.migration_flow import execute_full_migration
 from core.proxmox import (
@@ -41,6 +44,7 @@ from core.proxmox import (
     qm_importdisk,
     qm_importdisk_with_progress,
     qm_attach_scsi,
+    qm_attach_disk,
     qm_set_boot,
     qm_start,
     qm_set_uefi,
@@ -446,6 +450,23 @@ INDEX_HTML = """<!doctype html>
           <option value="false" selected>Disabilitato</option>
           <option value="true">Abilitato</option>
         </select>
+        <div>Profilo OS guest</div>
+        <select id="guestOs" title="Determina bus disco (SATA per Windows, SCSI VirtIO per Linux), modello NIC e ostype">
+          <option value="auto" selected>Auto (da .vmx)</option>
+          <option value="windows-server">Windows Server 2016/2019/2022</option>
+          <option value="windows-11">Windows 11 / Server 2025</option>
+          <option value="windows-10">Windows 10</option>
+          <option value="linux">Linux (Ubuntu/Debian/RHEL/...)</option>
+          <option value="freebsd">FreeBSD / pfSense / OPNsense</option>
+          <option value="other">Altro / Generico</option>
+        </select>
+        <div>Hint profilo rilevato</div>
+        <input id="profileHint" disabled value="—" />
+        <div title="Per VM Windows: NIC con link giù al primo boot (utile per migrare un DC senza che parli con l'altro DC)">Windows: link giù primo boot</div>
+        <select id="winLinkDown">
+          <option value="false" selected>No</option>
+          <option value="true">Sì (DC isolato)</option>
+        </select>
         <div>Snapshot ESXi (hot)</div>
         <select id="snapshot">
           <option value="true" selected>Sì</option>
@@ -597,6 +618,7 @@ INDEX_HTML = """<!doctype html>
       }
 
       let scanId = null;
+      let scannedVms = [];
       let eventSource = null;
       let jobsEventSource = null;
       let selectedResourceId = null;
@@ -1541,12 +1563,19 @@ INDEX_HTML = """<!doctype html>
           scanId = data.scan_id;
           el("scanStatus").textContent = "OK";
 
+          scannedVms = data.vms;
           fillSelect(el("vmSelect"), data.vms.map(v => ({ value: v.key, label: v.label })), (it) => it.label);
           fillSelect(el("storageSelect"), data.storages.map(s => ({ value: s, label: s })), (it) => it.label);
           fillSelect(el("bridgeSelect"), data.bridges.map(s => ({ value: s, label: s })), (it) => it.label);
 
           if (data.next_vmid) el("vmid").value = data.next_vmid;
-          if (data.vms.length > 0) el("vmname").value = data.vms[0].suggested_name || data.vms[0].label;
+          if (data.vms.length > 0) {
+            el("vmname").value = data.vms[0].suggested_name || data.vms[0].label;
+            const fw = (data.vms[0].firmware || "bios").toLowerCase();
+            if (el("uefi")) el("uefi").value = (fw === "efi") ? "true" : "false";
+            // Auto: profilo guest_os e hint visibile
+            updateGuestOsHint(data.vms[0]);
+          }
           el("btnStart").disabled = (data.vms.length === 0 || data.storages.length === 0 || data.bridges.length === 0);
           el("btnCapture").disabled = (data.vms.length === 0);
 
@@ -1563,7 +1592,61 @@ INDEX_HTML = """<!doctype html>
       el("vmSelect").addEventListener("change", () => {
         const opt = el("vmSelect").selectedOptions[0];
         if (opt && opt.textContent) el("vmname").value = opt.textContent;
+        const vmKey = el("vmSelect").value;
+        const vmInfo = (scannedVms || []).find(v => v.key === vmKey);
+        if (vmInfo && el("uefi")) {
+          const fw = (vmInfo.firmware || "bios").toLowerCase();
+          el("uefi").value = (fw === "efi") ? "true" : "false";
+        }
+        if (vmInfo) updateGuestOsHint(vmInfo);
       });
+
+      // Aggiorna l'hint di profilo OS in base alla VM scannata
+      function updateGuestOsHint(vmInfo) {
+        const hintEl = el("profileHint");
+        if (!hintEl) return;
+        const profile = (vmInfo && vmInfo.profile) || {};
+        const guestOs = (vmInfo && vmInfo.guest_os) || "";
+        const ostype = profile.ostype || "other";
+        const bus = profile.bus || "scsi";
+        const nic = profile.nic_model || "virtio";
+        const isWin = !!profile.is_windows;
+        const tag = isWin ? "WINDOWS" : (ostype === "l26" ? "LINUX" : ostype.toUpperCase());
+        hintEl.value = `${tag} • bus=${bus} • nic=${nic} • ostype=${ostype}` + (guestOs ? ` • from .vmx="${guestOs}"` : "");
+        // Suggerisci link_down per VM Windows ma lascia all'utente la scelta
+        if (isWin && el("winLinkDown") && el("winLinkDown").value === "false") {
+          // Non forziamo, ma evidenziamo (giallo soft) il campo via title
+          el("winLinkDown").title = "Suggerito per DC Windows: tieni il link giù al primo boot";
+        }
+      }
+      // Rilanciatore quando l'utente cambia manualmente il profilo
+      if (el("guestOs")) {
+        el("guestOs").addEventListener("change", () => {
+          // Se l'utente forza un profilo manuale, aggiorna l'hint per riflettere la scelta
+          const sel = el("guestOs").value;
+          const map = {
+            "auto": null,
+            "windows-server": { ostype: "win10", bus: "sata", nic_model: "e1000", is_windows: true, label: "WINDOWS-SERVER" },
+            "windows-11": { ostype: "win11", bus: "sata", nic_model: "e1000", is_windows: true, label: "WINDOWS-11" },
+            "windows-10": { ostype: "win10", bus: "sata", nic_model: "e1000", is_windows: true, label: "WINDOWS-10" },
+            "linux":      { ostype: "l26",   bus: "scsi", nic_model: "virtio", is_windows: false, label: "LINUX" },
+            "freebsd":    { ostype: "other", bus: "scsi", nic_model: "virtio", is_windows: false, label: "FREEBSD" },
+            "other":      { ostype: "other", bus: "scsi", nic_model: "virtio", is_windows: false, label: "OTHER" }
+          };
+          const hintEl = el("profileHint");
+          if (sel === "auto") {
+            // Torna all'auto-detect dalla VM corrente
+            const vmKey = el("vmSelect").value;
+            const vmInfo = (scannedVms || []).find(v => v.key === vmKey);
+            if (vmInfo) updateGuestOsHint(vmInfo);
+            return;
+          }
+          const m = map[sel];
+          if (m && hintEl) {
+            hintEl.value = `${m.label} • bus=${m.bus} • nic=${m.nic_model} • ostype=${m.ostype} • OVERRIDE manuale`;
+          }
+        });
+      }
 
       el("btnStart").addEventListener("click", async () => {
         if (!scanId) return;
@@ -1573,6 +1656,20 @@ INDEX_HTML = """<!doctype html>
         log("");
         log("== Migration job ==");
         try {
+          // Mappa la scelta UI dell'OS in stringa guestOS-style consumabile dal backend.
+          // 'auto' (default) → backend legge guestOS dal .vmx via SSH.
+          const guestOsSel = el("guestOs") ? el("guestOs").value : "auto";
+          const guestOsMap = {
+            "auto": "",
+            "windows-server": "windows9srv-64",
+            "windows-11": "windows11-64",
+            "windows-10": "windows10-64",
+            "linux": "ubuntu-64",
+            "freebsd": "freebsd13-64",
+            "other": "otherGuest"
+          };
+          const guestOsValue = guestOsMap[guestOsSel] || "";
+
           const data = await api("/api/jobs/start", {
             scan_id: scanId,
             vm_key: el("vmSelect").value,
@@ -1588,7 +1685,9 @@ INDEX_HTML = """<!doctype html>
             snapshot: el("snapshot").value === "true",
             convert: el("convert").value === "true",
             format: el("format").value,
-            dest_dir: el("destDir").value
+            dest_dir: el("destDir").value,
+            guest_os: guestOsValue,
+            windows_link_down: el("winLinkDown") && el("winLinkDown").value === "true"
           });
 
           const jobId = data.job_id;
@@ -3089,7 +3188,40 @@ def create_app() -> Flask:
                     if isinstance(path, str) and "/" in path:
                         suggested = path.split("/", 1)[0] or suggested
                         label = suggested
-                vms_list.append({"key": key, "label": label, "suggested_name": suggested})
+                # Rileva firmware (EFI/BIOS) e guestOS leggendo il file .vmx
+                firmware = "bios"
+                guest_os = ""
+                try:
+                    cfg = info.get("config", {}) if isinstance(info, dict) else {}
+                    ds = (cfg.get("datastore") or "").strip()
+                    vmx = (cfg.get("path") or "").strip()
+                    if ds and vmx:
+                        firmware = esxi_get_vm_firmware(ssh, esxi_host, esxi_user, "/root/esxi_pass.txt", ds, vmx)
+                        try:
+                            guest_os = esxi_get_vm_guestos(
+                                ssh, esxi_host, esxi_user, "/root/esxi_pass.txt", ds, vmx
+                            )
+                        except Exception:
+                            guest_os = ""
+                except Exception:
+                    pass
+                # Calcola il profilo per esporre alla UI le scelte raccomandate
+                profile = map_guestos_to_proxmox(guest_os)
+                vms_list.append(
+                    {
+                        "key": key,
+                        "label": label,
+                        "suggested_name": suggested,
+                        "firmware": firmware,
+                        "guest_os": guest_os,
+                        "profile": {
+                            "ostype": profile.get("ostype", "other"),
+                            "is_windows": bool(profile.get("is_windows")),
+                            "bus": profile.get("bus", "scsi"),
+                            "nic_model": profile.get("nic_model", "virtio"),
+                        },
+                    }
+                )
 
             return jsonify(
                 {
@@ -3135,6 +3267,10 @@ def create_app() -> Flask:
         use_snapshot = bool(body.get("snapshot"))
         use_convert = bool(body.get("convert"))
         convert_fmt = (body.get("format") or "qcow2").strip() or "qcow2"
+        # Permette override esplicito dell'OS dalla UI (utile se il .vmx non ha
+        # guestOS o se vuoi forzare il profilo Windows/Linux).
+        guest_os_override = (body.get("guest_os") or "").strip() or None
+        windows_link_down = bool(body.get("windows_link_down"))
 
         if not scan_id or not vm_key:
             return jsonify({"error": "scan_id/vm_key mancanti"}), 400
@@ -3225,6 +3361,8 @@ def create_app() -> Flask:
                     convert_fmt=convert_fmt,
                     use_esxi_snapshot=use_snapshot,
                     progress_cb=progress_cb,
+                    guest_os=guest_os_override,
+                    windows_link_down=windows_link_down,
                 )
                 for line in logs:
                     job.emit({"type": "log", "line": line})
@@ -5492,11 +5630,79 @@ def create_app() -> Flask:
                     _upload(os.path.join(backup_dir, desc), f"{remote_dir}/{desc}", desc)
                     _upload(os.path.join(backup_dir, data), f"{remote_dir}/{data}", data)
 
-                net0 = f"virtio,bridge={bridge}"
-                code, out, err = qm_create(ssh, vmid, name, mem, cores, net0)
+                # ---- Rilevamento guestOS dal .vmx nel backup_dir ----
+                # Cerca un .vmx (può essere nel manifest o per scoperta diretta) e ne
+                # legge guestOS. Da questo deriva il profilo (Windows → SATA + e1000;
+                # Linux → SCSI VirtIO + virtio NIC; ostype passato a qm create).
+                guest_os = ""
+                try:
+                    # Prova prima il manifest, poi fallback a glob della cartella
+                    vmx_hint = ""
+                    files_obj = manifest.get("files") or {}
+                    if isinstance(files_obj, dict):
+                        vmx_hint = (files_obj.get("vmx") or "").strip()
+                    if not vmx_hint:
+                        for fn in os.listdir(backup_dir):
+                            if fn.lower().endswith(".vmx"):
+                                vmx_hint = fn
+                                break
+                    if vmx_hint:
+                        vmx_path = os.path.join(backup_dir, vmx_hint)
+                        with open(vmx_path, "r", encoding="utf-8", errors="ignore") as fh:
+                            for ln in fh.read().splitlines():
+                                m = re.match(r'\s*guestOS\s*=\s*"([^"]+)"\s*$', ln)
+                                if m:
+                                    guest_os = (m.group(1) or "").strip().lower()
+                                    break
+                except Exception as _e:
+                    job.emit({"type": "log", "line": f"guestOS detect: {_e}"})
+
+                profile = map_guestos_to_proxmox(guest_os)
+                is_windows = bool(profile.get("is_windows"))
+                nic_model = profile.get("nic_model", "virtio")
+                bus = profile.get("bus", "scsi")
+                ostype = profile.get("ostype", "other")
+                machine = profile.get("machine") if use_uefi else None
+                scsihw = profile.get("scsihw", "virtio-scsi-single")
+                bios = "ovmf" if use_uefi else None
+                job.emit(
+                    {
+                        "type": "log",
+                        "line": (
+                            f"Profilo VM: guestOS='{guest_os or '-'}' ostype={ostype} "
+                            f"bus={bus} nic={nic_model} machine={machine or 'default'} "
+                            f"bios={bios or 'default'} is_windows={is_windows}"
+                        ),
+                    }
+                )
+
+                # NIC: Windows al primo boot ha solo driver e1000 nativi.
+                net0 = f"{nic_model},bridge={bridge}"
+
+                code, out, err = qm_create(
+                    ssh,
+                    vmid,
+                    name,
+                    mem,
+                    cores,
+                    net0,
+                    ostype=ostype,
+                    machine=machine,
+                    bios=bios,
+                    cpu="host",
+                    scsihw=scsihw,
+                )
                 job.emit({"type": "log", "line": f"qm create -> code={code}\n{out}\n{err}"})
                 if code != 0:
                     raise RuntimeError(f"Creazione VM fallita (code={code}): {err or out}")
+
+                # UEFI subito dopo create: l'efidisk si crea con ms-cert=2023k
+                # già al primo colpo, niente warning sui certificati 2011.
+                if use_uefi:
+                    code_u, out_u, err_u = qm_set_uefi(ssh, vmid, storage)
+                    job.emit({"type": "log", "line": f"qm set UEFI -> code={code_u}\n{out_u}\n{err_u}"})
+                    if code_u != 0:
+                        raise RuntimeError(f"UEFI fallito (code={code_u}): {err_u or out_u}")
 
                 def progress_cb(pct: float, msg: str):
                     m = (msg or "")
@@ -5522,31 +5728,49 @@ def create_app() -> Flask:
                     remote_desc = f"{remote_dir}/{desc}"
                     if progress_cb:
                         try:
-                            progress_cb(0.0, f"Import: avvio importdisk su storage '{storage}'")
+                            progress_cb(0.0, f"Import: avvio importdisk (formato qcow2) su storage '{storage}'")
                         except Exception:
                             pass
-                        code_i, out_i, err_i = qm_importdisk_with_progress(ssh, vmid, remote_desc, storage, progress_cb)
+                        code_i, out_i, err_i = qm_importdisk_with_progress(
+                            ssh, vmid, remote_desc, storage, progress_cb, fmt="qcow2"
+                        )
                     else:
-                        code_i, out_i, err_i = qm_importdisk(ssh, vmid, remote_desc, storage)
+                        code_i, out_i, err_i = qm_importdisk(ssh, vmid, remote_desc, storage, fmt="qcow2")
                     job.emit({"type": "log", "line": f"qm importdisk (disk {idx}) -> code={code_i}\n{out_i}\n{err_i}"})
                     if code_i != 0:
                         raise RuntimeError(f"Import disk {idx} fallito (code={code_i}): {err_i or out_i}")
                     disk_id = parse_importdisk_disk_id(out_i) or f"{storage}:vm-{vmid}-disk-{idx}"
-                    code_a, out_a, err_a = qm_attach_scsi(ssh, vmid, disk_id, index=idx)
-                    job.emit({"type": "log", "line": f"qm set --scsi{idx} -> code={code_a}\n{out_a}\n{err_a}"})
+                    # Attach bus-aware: SATA per Windows (driver nativo), SCSI VirtIO altrimenti
+                    code_a, out_a, err_a = qm_attach_disk(
+                        ssh,
+                        vmid,
+                        disk_id,
+                        index=idx,
+                        bus=bus,
+                        scsihw=scsihw,
+                        discard=True,
+                        iothread=(bus == "scsi"),
+                    )
+                    job.emit({"type": "log", "line": f"qm set --{bus}{idx} -> code={code_a}\n{out_a}\n{err_a}"})
                     if code_a != 0:
                         raise RuntimeError(f"Attach disk {idx} fallito (code={code_a}): {err_a or out_a}")
 
-                if use_uefi:
-                    code_u, out_u, err_u = qm_set_uefi(ssh, vmid, storage)
-                    job.emit({"type": "log", "line": f"qm set UEFI -> code={code_u}\n{out_u}\n{err_u}"})
-                    if code_u != 0:
-                        raise RuntimeError(f"UEFI fallito (code={code_u}): {err_u or out_u}")
-
-                code_b, out_b, err_b = qm_set_boot(ssh, vmid, "scsi0")
-                job.emit({"type": "log", "line": f"qm set --boot -> code={code_b}\n{out_b}\n{err_b}"})
+                # Boot order coerente col bus scelto
+                boot_dev = f"{bus}0"
+                code_b, out_b, err_b = qm_set_boot(ssh, vmid, boot_dev)
+                job.emit({"type": "log", "line": f"qm set --boot order={boot_dev} -> code={code_b}\n{out_b}\n{err_b}"})
                 if code_b != 0:
                     raise RuntimeError(f"Boot order fallito (code={code_b}): {err_b or out_b}")
+
+                # Per VM Windows: monta automaticamente l'ISO virtio-win se presente
+                # (utile per installare i driver dopo il primo boot).
+                if is_windows:
+                    code_iso, out_iso, _err_iso = ssh.run(
+                        "test -f /var/lib/vz/template/iso/virtio-win.iso && "
+                        f"qm set {vmid} --ide2 local:iso/virtio-win.iso,media=cdrom || true"
+                    )
+                    if "update VM" in (out_iso or ""):
+                        job.emit({"type": "log", "line": f"ISO virtio-win montata su ide2 -> {out_iso.strip()}"})
 
                 if start_vm:
                     code_s, out_s, err_s = qm_start(ssh, vmid)
