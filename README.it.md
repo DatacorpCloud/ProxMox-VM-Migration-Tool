@@ -20,20 +20,22 @@ Interfaccia web (Flask) orientata alle operazioni quotidiane di backup/restore:
 
 Avvio Web
 
-- Installa dipendenze: `pip install -r vm-migration-tool/requirements.txt`
-- Avvia server: `python vm-migration-tool/main.py --web --host localhost --port 8080`
+- Installa dipendenze: `pip install -r requirements.txt`
+- Avvia server: `python main.py --web --host 0.0.0.0 --port 8080`
 - Apri: http://localhost:8080
+
+> Esegui sull'host Proxmox stesso (più rapido perché lavora su file locali) oppure su qualunque Linux/Windows che possa raggiungere via SSH sia il Proxmox sia gli ESXi sorgente.
 
 Note
 
 - Limite MVP: un job alla volta (backup/restore/migrazione).
 - Gli storage repository possono essere verificati dalla UI (pulsante “Test”) per validare l’accesso prima dell’uso.
 - Set minimo per deploy solo web:
-  - `vm-migration-tool/main.py`
-  - `vm-migration-tool/ui/web_app.py`
-  - `vm-migration-tool/core/*`
-  - `vm-migration-tool/requirements.txt`
-  - Opzionali per persistenza: `vm-migration-tool/app.sqlite3`, `vm-migration-tool/repository/`
+  - `main.py`
+  - `ui/web_app.py`
+  - `core/*`
+  - `requirements.txt`
+  - Opzionali per persistenza: `app.sqlite3`, `repository/`
 
 Screenshot Web UI
 
@@ -77,8 +79,8 @@ Requisiti
 
 Avvio rapido
 
-- Installa dipendenze: `pip install -r vm-migration-tool/requirements.txt`
-- Avvia app: `python vm-migration-tool/main.py`
+- Installa dipendenze: `pip install -r requirements.txt`
+- Avvia app: `python main.py`
 - Nella UI:
   - Inserisci le credenziali di Proxmox ed ESXi.
   - Scansiona ESXi e scegli una VM.
@@ -135,6 +137,106 @@ Istruzioni operative (Opzioni & Migrazione)
 - **Profilo OS (Auto)**: il form rileva automaticamente la famiglia OS dal `.vmx` sorgente. Per Windows configura la VM su SATA + e1000 (primo boot sicuro). Per Linux/FreeBSD usa SCSI VirtIO con discard + iothread.
 - **Isolamento DC Windows**: spunta *"Windows: link giù primo boot"* quando migri un Domain Controller che non vuoi parli con i peer al primo boot.
 - Premi `Prepara/Esegui Migrazione` e segui le barre di avanzamento (copia e import/conversione). Entrambe le barre ora si aggiornano in tempo reale (progress di `qemu-img` e `qm importdisk`).
+
+Operazioni post-migrazione
+
+Quando la VM boota su Proxmox per la prima volta, il sistema operativo guest può aver bisogno di piccoli aggiustamenti per riprendere rete e prestazioni piene.
+
+### Linux (Ubuntu/Debian con netplan + cloud-init)
+
+L'interfaccia di rete cambia nome (su Proxmox VirtIO la prima NIC è `ens18`). Inoltre cloud-init, se attivo, **rigenera la config a ogni boot** e sovrascrive il tuo `netplan` manuale: per renderla persistente devi disabilitare la gestione network di cloud-init.
+
+```bash
+# 1. (sulla VM) verifica nome interfaccia reale
+ip -br link
+
+# 2. scrivi /etc/netplan/00-network.yaml
+sudo tee /etc/netplan/00-network.yaml >/dev/null <<'EOF'
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ens18:
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - 192.168.1.50/24
+      nameservers:
+        addresses: [1.1.1.1, 8.8.8.8]
+        search: []
+      routes:
+        - to: default
+          via: 192.168.1.1
+EOF
+
+sudo chmod 600 /etc/netplan/00-network.yaml
+
+# 3. disabilita cloud-init network (KEY!)
+echo 'network: {config: disabled}' | \
+    sudo tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+
+# 4. rimuovi il netplan generato da cloud-init
+sudo rm -f /etc/netplan/50-cloud-init.yaml
+
+# 5. cleanup state cloud-init e applica
+sudo cloud-init clean --logs
+sudo netplan generate
+sudo netplan apply
+
+# 6. test riavvio (vero giudice di persistenza)
+sudo reboot
+```
+
+### Windows Server / Windows 10/11
+
+Il tool al primo boot configura la VM su **SATA + e1000** per evitare BSOD. Una volta dentro Windows, hai due passaggi opzionali:
+
+**a) Installa driver VirtIO e Guest Agent** (sempre raccomandato):
+1. Dall'ISO `virtio-win.iso` montata come `ide2`, lancia `virtio-win-gt-x64.msi` (driver completi) e `guest-agent\qemu-ga-x86_64.msi` (Guest Agent).
+2. Riavvia.
+
+**b) Migra il disco a SCSI VirtIO** (performance migliori, opzionale):
+1. Dal Proxmox host, aggiungi un disco SCSI VirtIO fittizio: `qm set <VMID> --scsi0 <storage>:1,format=qcow2`
+2. Riavvia la VM. In **Gestione dispositivi → Controller di archiviazione** verifica che `Red Hat VirtIO SCSI controller` compaia senza errori.
+3. Da CMD admin sulla VM, **arma `viostor` come boot driver** (passaggio chiave, evita BSOD `INACCESSIBLE_BOOT_DEVICE` al prossimo boot):
+   ```cmd
+   reg add "HKLM\SYSTEM\CurrentControlSet\Services\viostor"  /v Start /t REG_DWORD /d 0 /f
+   reg add "HKLM\SYSTEM\CurrentControlSet\Services\vioscsi"  /v Start /t REG_DWORD /d 0 /f
+   ```
+4. Spegni la VM, scambia disco da SATA a SCSI VirtIO + cambia NIC da e1000 a virtio:
+   ```bash
+   qm shutdown <VMID>
+   qm set <VMID> --delete sata0 --delete scsi0
+   qm set <VMID> --scsi0 <storage>:<vmid>/vm-<vmid>-disk-X.qcow2,discard=on,iothread=1
+   qm set <VMID> --boot order=scsi0
+   qm set <VMID> --net0 virtio=<MAC-OLD>,bridge=vmbr0
+   qm start <VMID>
+   ```
+
+**c) Aggiorna i certificati UEFI 2023** (per VM migrate prima del 2026-04 o se vuoi forzare):
+```bash
+qm shutdown <VMID>
+qm enroll-efi-keys <VMID>     # da fare a VM spenta
+qm start <VMID>
+```
+Se la VM ha BitLocker attivo, sospendi prima i protectors:
+```powershell
+manage-bde -protectors -disable C: -RebootCount 1
+```
+
+Troubleshooting
+
+| Sintomo | Diagnosi | Fix |
+|---|---|---|
+| BSOD `INACCESSIBLE_BOOT_DEVICE` (0x7B) appena boot Windows | `viostor` non armato come boot driver, oppure disco attaccato su SCSI VirtIO senza driver presente | Riattacca il disco su `sata0` con `qm set --delete scsi0 --sata0 ...,discard=on`, fai boot, applica i `reg add` di sopra, poi rifai lo swap |
+| Boot Windows si ferma a "Start boot option" / OVMF logo | NVRAM EFI corrotta o boot order errato | `qm set <VMID> --boot order=sata0`. Se persiste: ESC durante il logo OVMF → Boot Manager → Boot from File → `EFI\Microsoft\Boot\bootmgfw.efi` |
+| Linux migrato perde la config IP a ogni reboot | cloud-init rigenera il netplan | Disabilita network di cloud-init (vedi sezione post-migrazione Linux) |
+| Linux: nome interfaccia diverso da `ens18` | NIC su slot PCI inatteso o UEFI vs BIOS diverso | Modifica la chiave nel netplan; il nome reale è in `ip -br link` |
+| Disco finisce in `raw` invece di `qcow2` su NFS | Versione tool < 2026-04 senza fix `--format qcow2` | Aggiorna il tool oppure manualmente: `qemu-img convert -O qcow2 vm-N-disk-X.raw vm-N-disk-X.qcow2` e poi `qm set --scsi0 ...qcow2` |
+| Progress bar "Conversione/Import" ferma a 0% poi salta a 100% | Versione tool < 2026-04 (regex parser bug + buffering) | Aggiorna il tool: ora usa `stdbuf -oL` e regex corretta su `(NN.NN/100%)` |
+| Warning "UEFI 2011 certificates expire June 2026" | `efidisk0` creato senza `ms-cert=2023k` | `qm enroll-efi-keys <VMID>` a VM spenta |
+| VM Windows DC migrata "litiga" col DC originale ancora vivo | Stessa identità AD attiva contemporaneamente | Migra con NIC `link_down=1` (toggle UI), poi spegni il DC originale prima di rialzare il link |
+| Source ESXi con snapshot non consolidati | La catena `-000001-sesparse.vmdk` viene seguita da `qemu-img convert` ma è lenta e fragile | Consolida gli snapshot su ESXi prima della migrazione: `vim-cmd vmsvc/snapshot.removeall <VMID>` |
 
 Test
 
