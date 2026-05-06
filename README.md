@@ -20,8 +20,8 @@ Lightweight web interface (Flask) focused on day-to-day backup/restore operation
 
 Run the Web UI
 
-- Install deps: `pip install -r vm-migration-tool/requirements.txt`
-- Start server: `python vm-migration-tool/main.py --web --host localhost --port 8080`
+- Install deps: `pip install -r requirements.txt`
+- Start server: `python main.py --web --host localhost --port 8080`
 - Open: http://localhost:8080
 
 Notes
@@ -29,11 +29,11 @@ Notes
 - MVP limitation: one job at a time (backup/restore/migration).
 - Repo storages can be tested from the UI ("Test" button) to validate access before using them.
 - Minimal runtime set for web-only deployments:
-  - `vm-migration-tool/main.py`
-  - `vm-migration-tool/ui/web_app.py`
-  - `vm-migration-tool/core/*`
-  - `vm-migration-tool/requirements.txt`
-  - Optional for persistence: `vm-migration-tool/app.sqlite3`, `vm-migration-tool/repository/`
+  - `main.py`
+  - `/ui/web_app.py`
+  - `/core/*`
+  - `requirements.txt`
+  - Optional for persistence: `ProxMox-VM-Migration-Tool-migrate-vmware/app.sqlite3`, `ProxMox-VM-Migration-Tool-migrate-vmware/repository/`
 
 Web UI Screenshots
 
@@ -77,8 +77,8 @@ Requirements
 
 Quick Start
 
-- Install deps: `pip install -r vm-migration-tool/requirements.txt`
-- Run app: `python vm-migration-tool/main.py`
+- Install deps: `pip install -r requirements.txt`
+- Run app: `python main.py`
 - In the UI:
   - Enter Proxmox and ESXi credentials.
   - Scan ESXi and choose a VM.
