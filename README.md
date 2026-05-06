@@ -33,7 +33,7 @@ Notes
   - `/ui/web_app.py`
   - `/core/*`
   - `requirements.txt`
-  - Optional for persistence: `ProxMox-VM-Migration-Tool-migrate-vmware/app.sqlite3`, `ProxMox-VM-Migration-Tool-migrate-vmware/repository/`
+  - Optional for persistence: `/app.sqlite3`, `/repository/`
 
 Web UI Screenshots
 
